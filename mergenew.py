@@ -266,7 +266,7 @@ def get_business_db_connection():
 # ================= USER AUTHENTICATION =================
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-def create_user(username: str, password: str, email: str = None) -> Tuple[bool, str]:
+def create_user(username: str, password: str) -> Tuple[bool, str]:
     if not st.session_state.auth_db:
         return False, "Auth database not connected"
     
@@ -274,8 +274,8 @@ def create_user(username: str, password: str, email: str = None) -> Tuple[bool, 
     try:
         password_hash = hash_password(password)
         cursor.execute(
-            "INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s)",
-            (username, password_hash, email)
+            "INSERT INTO users (username, password_hash) VALUES (%s, %s, %s)",
+            (username, password_hash)
         )
         st.session_state.auth_db.commit()
         return True, "User created successfully"
@@ -1233,7 +1233,7 @@ if not st.session_state.logged_in:
     with tab2:
         st.subheader("Sign Up")
         signup_username = st.text_input("Username", key="signup_user")
-        signup_email = st.text_input("Email (optional)", key="signup_email")
+        # signup_email = st.text_input("Email (optional)", key="signup_email")
         signup_password = st.text_input("Password", type="password", key="signup_pass")
         signup_confirm = st.text_input("Confirm Password", type="password", key="signup_confirm")
         
@@ -1244,7 +1244,7 @@ if not st.session_state.logged_in:
                 elif len(signup_password) < 6:
                     st.error("Password must be 6+ characters")
                 else:
-                    success, message = create_user(signup_username, signup_password, signup_email)
+                    success, message = create_user(signup_username, signup_password)
                     if success:
                         st.success("Account created! Please login.")
                     else:
