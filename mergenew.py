@@ -13,6 +13,9 @@ import re
 import shutil
 import zipfile
 from io import BytesIO
+import base64
+import tempfile
+
 # ================= RAG IMPORTS =================
 try:
     import PyPDF2
@@ -135,6 +138,23 @@ def get_ocr_reader():
     except:
         return None
 # ================= DATABASE CONNECTIONS =================
+def get_temp_ssl_ca(ca_b64_secret: str) -> str:
+    """Decode base64 SSL CA and write to temp file."""
+    if not ca_b64_secret:
+        return ""
+    try:
+        cert_bytes = base64.b64decode(ca_b64_secret)
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pem', delete=False) as temp_file:
+            temp_file.write(cert_bytes)
+            temp_path = temp_file.name
+        return temp_path  # Path to temp cert file
+    except Exception as e:
+        st.error(f"Failed to decode SSL cert: {e}")
+        return ""
+    
+ssl_ca_b64 = st.secrets["database"].get("ssl_ca_b64", "")
+ssl_ca_path = get_temp_ssl_ca(ssl_ca_b64)
+
 @st.cache_resource
 def get_auth_db_connection():
     """Connect to authentication database"""
@@ -148,7 +168,8 @@ def get_auth_db_connection():
                 password=st.secrets["auth_database"]["password"],
                 ssl_disabled=False,
                 ssl_verify_cert=True,
-                ssl_ca=st.secrets["auth_database"].get("ssl_ca", ""),
+                # ssl_ca=st.secrets["auth_database"].get("ssl_ca", ""),
+                ssl_ca=ssl_ca_path,
                 ssl_verify_identity=True,
                 connect_timeout=30
             )
@@ -224,7 +245,8 @@ def get_business_db_connection():
                 password=st.secrets["database"]["password"],
                 ssl_disabled=False,
                 ssl_verify_cert=True,
-                ssl_ca=st.secrets["database"]["ssl_ca"],
+                # ssl_ca=st.secrets["database"]["ssl_ca"],
+                ssl_ca=ssl_ca_path,
                 ssl_verify_identity=True,
                 connect_timeout=30
             )
@@ -474,7 +496,8 @@ def create_temp_database_from_file(file_bytes: bytes, filename: str) -> Tuple[bo
                 password=st.secrets["temp_database"]["password"],
                 ssl_disabled=False,
                 ssl_verify_cert=True,
-                ssl_ca=st.secrets["temp_database"]["ssl_ca"],
+                # ssl_ca=st.secrets["temp_database"]["ssl_ca"],
+                ssl_ca=ssl_ca_path,
                 ssl_verify_identity=True
             )
         else:
