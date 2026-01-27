@@ -274,7 +274,7 @@ def create_user(username: str, password: str) -> Tuple[bool, str]:
     try:
         password_hash = hash_password(password)
         cursor.execute(
-            "INSERT INTO users (username, password_hash) VALUES (%s, %s, %s)",
+            "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
             (username, password_hash)
         )
         st.session_state.auth_db.commit()
