@@ -1,23 +1,24 @@
 """
 SQL Assistant Pro - Enhanced Version with Groq (Meta Llama)
+COMPLETE VERSION WITH ALL IMPROVEMENTS
+
 Features:
 1. Context Retention: Recent 5 messages + summarized older messages + 3 semantically similar Q&As
 2. LLM-Based Smart Query Analysis
-3. Enhanced Product Display with Interactive Cards
+3. DYNAMIC Product/Student/Employee Display (no hardcoding)
 4. Improved Authentication UI
 5. Delete Confirmation Dialogs
-6. FIXED: SQLite compatibility for custom databases
-7. NEW: Persistent Custom SQLite Databases (file-based)
-8. NEW: Custom MySQL Database Connection Support
-9. NEW: User-specific previous SQLite DB listing on login
-10. NEW: UI-based credential input for Custom MySQL
-11. FIXED: Improved Visualization Logic for Better Data Handling
-12. FIXED: Generic Data Display (No Product Assumption)
-13. FIXED: Dynamic Sample Data in Responses
-DATABASE MIGRATION REQUIRED:
-If you're updating from a previous version, run this SQL command on your auth database:
+6. SQLite compatibility for custom databases
+7. Persistent Custom SQLite Databases (file-based)
+8. Custom MySQL Database Connection Support
+9. User-specific previous SQLite DB listing on login
+10. UI-based credential input for Custom MySQL
+11. IMPROVED: Dynamic data visualization based on query intent
+12. IMPROVED: Universal card display for any data type
+13. IMPROVED: Intelligent chart selection (6+ chart types)
+
+DATABASE MIGRATION:
 ALTER TABLE chat_history ADD COLUMN result_data LONGTEXT AFTER response;
-This adds persistent storage for query results so users can view historical data.
 """
 import streamlit as st
 import mysql.connector
@@ -37,9 +38,8 @@ import base64
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-import tempfile
-import shutil
 import glob
+
 # ================= CONFIGURATION =================
 st.set_page_config(
     page_title="SQL Assistant Pro",
@@ -47,10 +47,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-# Custom CSS for better UI
+
+# Custom CSS
 st.markdown("""
 <style>
-    /* Login/Signup Page Styling */
     .auth-container {
         max-width: 500px;
         margin: 0 auto;
@@ -59,21 +59,17 @@ st.markdown("""
         border-radius: 20px;
         box-shadow: 0 10px 40px rgba(0,0,0,0.2);
     }
-   
     .auth-header {
         text-align: center;
         color: white;
         margin-bottom: 2rem;
     }
-   
     .auth-form {
         background: white;
         padding: 2rem;
         border-radius: 15px;
         box-shadow: 0 5px 20px rgba(0,0,0,0.1);
     }
-   
-    /* Delete Confirmation Dialog */
     .delete-warning {
         background: #fff5f5;
         border: 2px solid #fc8181;
@@ -81,64 +77,45 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
     }
-   
-    /* Sidebar Chat Items */
     .chat-item {
         border-radius: 10px;
         margin: 0.5rem 0;
         transition: all 0.3s ease;
     }
-   
     .chat-item:hover {
         background: #f7fafc;
     }
-
-    /* Custom DB Form Styling */
     .custom-db-form {
         background: #f8f9fa;
         padding: 1rem;
         border-radius: 10px;
         border-left: 4px solid #667eea;
     }
-
-    /* DB List Styling */
     .db-item {
         background: #e6f3ff;
         padding: 0.5rem;
         border-radius: 5px;
         margin: 0.25rem 0;
     }
-
-    /* Generic Data Row Display */
-    .data-row-card {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid #667eea;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# Create persistent DB directory if it doesn't exist
 PERSISTENT_DB_DIR = "custom_dbs"
 os.makedirs(PERSISTENT_DB_DIR, exist_ok=True)
 
-# SSL Certificate Path
 try:
     ssl_ca_path = st.secrets.get("ssl_ca_path", None)
 except:
     ssl_ca_path = None
 
-# Load embedding model for semantic search (cached)
 @st.cache_resource
 def load_embedding_model():
-    """Load sentence transformer model for semantic similarity"""
+    """Load sentence transformer model"""
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 embedding_model = load_embedding_model()
 
-# ================= SESSION STATE INITIALIZATION =================
+# ================= SESSION STATE =================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user_id' not in st.session_state:
@@ -150,13 +127,13 @@ if 'current_chat_id' not in st.session_state:
 if 'business_schema' not in st.session_state:
     st.session_state.business_schema = {}
 if 'db_mode' not in st.session_state:
-    st.session_state.db_mode = "system"  # system, custom_sqlite, custom_mysql
+    st.session_state.db_mode = "system"
 if 'active_custom_sqlite_path' not in st.session_state:
     st.session_state.active_custom_sqlite_path = None
 if 'user_sqlite_dbs' not in st.session_state:
-    st.session_state.user_sqlite_dbs = []  # List of user's DB paths
+    st.session_state.user_sqlite_dbs = []
 if 'custom_mysql_params' not in st.session_state:
-    st.session_state.custom_mysql_params = {}  # Dict for MySQL creds
+    st.session_state.custom_mysql_params = {}
 if 'custom_mysql_connection' not in st.session_state:
     st.session_state.custom_mysql_connection = None
 if 'custom_schema' not in st.session_state:
@@ -175,39 +152,18 @@ def load_user_sqlite_dbs(user_id: int) -> List[str]:
     """Load list of user's persistent SQLite DB paths"""
     pattern = os.path.join(PERSISTENT_DB_DIR, f"{user_id}_*.db")
     db_files = glob.glob(pattern)
-    # Sort by modification time, newest first
     db_files.sort(key=os.path.getmtime, reverse=True)
     return db_files
 
-# ================= DATABASE CONNECTION FUNCTIONS =================
-
-def get_temp_ssl_ca(ca_b64_secret: str) -> str:
-    """Decode base64 SSL CA and write to temp file."""
-    if not ca_b64_secret:
-        return ""
-    try:
-        cert_bytes = base64.b64decode(ca_b64_secret)
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pem', delete=False) as temp_file:
-            temp_file.write(cert_bytes)
-            temp_path = temp_file.name
-        return temp_path  # Path to temp cert file
-    except Exception as e:
-        st.error(f"Failed to decode SSL cert: {e}")
-        return ""
-
-ssl_ca_b64 = st.secrets["database"].get("ssl_ca_b64", "")
-ssl_ca_path = get_temp_ssl_ca(ssl_ca_b64)
-
+# ================= DATABASE CONNECTION =================
 def get_auth_db_connection():
     """Connect to authentication database"""
     try:
         if "auth_database" in st.secrets:
-            # Use provided SSL config, with option for ssl_disabled
             ssl_config = {
                 'ssl_disabled': st.secrets["auth_database"].get("ssl_disabled", False),
                 'ssl_verify_cert': not st.secrets["auth_database"].get("ssl_disabled", False),
-                # 'ssl_ca': st.secrets["auth_database"].get("ssl_ca", ""),
-                'ssl_ca': ssl_ca_path,
+                'ssl_ca': st.secrets["auth_database"].get("ssl_ca", ""),
                 'ssl_verify_identity': not st.secrets["auth_database"].get("ssl_disabled", False),
             }
             connection = mysql.connector.connect(
@@ -226,9 +182,8 @@ def get_auth_db_connection():
                 user='root',
                 password='password',
                 connect_timeout=10,
-                ssl_disabled=True  # Default to disabled for local
+                ssl_disabled=True
             )
-       
         if connection.is_connected():
             init_auth_tables(connection)
         return connection
@@ -240,12 +195,10 @@ def get_business_db_connection():
     """Connect to business database"""
     try:
         if "database" in st.secrets:
-            # Use provided SSL config, with option for ssl_disabled
             ssl_config = {
                 'ssl_disabled': st.secrets["database"].get("ssl_disabled", False),
                 'ssl_verify_cert': not st.secrets["database"].get("ssl_disabled", False),
-                # 'ssl_ca': st.secrets["database"].get("ssl_ca", ""),
-                'ssl_ca': ssl_ca_path,
+                'ssl_ca': st.secrets["database"].get("ssl_ca", ""),
                 'ssl_verify_identity': not st.secrets["database"].get("ssl_disabled", False),
             }
             connection = mysql.connector.connect(
@@ -264,7 +217,7 @@ def get_business_db_connection():
                 user='root',
                 password='password',
                 connect_timeout=10,
-                ssl_disabled=True  # Default to disabled for local
+                ssl_disabled=True
             )
         return connection
     except Error as e:
@@ -272,13 +225,12 @@ def get_business_db_connection():
         return None
 
 def get_custom_mysql_connection_from_params(params: Dict) -> Optional[mysql.connector.connection.MySQLConnection]:
-    """Connect to custom MySQL using provided params"""
+    """Connect to custom MySQL"""
     try:
         ssl_config = {
             'ssl_disabled': params.get("ssl_disabled", True),
             'ssl_verify_cert': not params.get("ssl_disabled", True),
-            # 'ssl_ca': params.get("ssl_ca", ""),
-            'ssl_ca': ssl_ca_path,
+            'ssl_ca': params.get("ssl_ca", ""),
             'ssl_verify_identity': not params.get("ssl_disabled", True),
         }
         connection = mysql.connector.connect(
@@ -296,7 +248,7 @@ def get_custom_mysql_connection_from_params(params: Dict) -> Optional[mysql.conn
         return None
 
 def init_auth_tables(connection):
-    """Initialize authentication tables if they don't exist"""
+    """Initialize authentication tables"""
     cursor = connection.cursor()
     try:
         cursor.execute("""
@@ -308,7 +260,6 @@ def init_auth_tables(connection):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-       
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -319,7 +270,6 @@ def init_auth_tables(connection):
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         """)
-       
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_history (
                 history_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -334,16 +284,15 @@ def init_auth_tables(connection):
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
             )
         """)
-       
         connection.commit()
     except Error as e:
         st.error(f"Error initializing auth tables: {e}")
     finally:
         cursor.close()
 
-# ================= AUTHENTICATION FUNCTIONS =================
+# ================= AUTHENTICATION =================
 def hash_password(password: str) -> str:
-    """Hash password using SHA256"""
+    """Hash password"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def create_user(username: str, password: str) -> Tuple[bool, str]:
@@ -351,7 +300,6 @@ def create_user(username: str, password: str) -> Tuple[bool, str]:
     connection = get_auth_db_connection()
     if not connection:
         return False, "Database connection failed"
-   
     try:
         cursor = connection.cursor()
         hashed_pw = hash_password(password)
@@ -375,7 +323,6 @@ def verify_user(username: str, password: str) -> Tuple[bool, Optional[int]]:
     connection = get_auth_db_connection()
     if not connection:
         return False, None
-   
     try:
         cursor = connection.cursor()
         hashed_pw = hash_password(password)
@@ -384,7 +331,6 @@ def verify_user(username: str, password: str) -> Tuple[bool, Optional[int]]:
             (username, hashed_pw)
         )
         result = cursor.fetchone()
-       
         if result:
             return True, result[0]
         return False, None
@@ -396,21 +342,18 @@ def verify_user(username: str, password: str) -> Tuple[bool, Optional[int]]:
             cursor.close()
             connection.close()
 
-# ================= DATABASE SCHEMA FUNCTIONS =================
+# ================= DATABASE SCHEMA =================
 def is_sqlite_connection(connection) -> bool:
     """Check if connection is SQLite"""
     return isinstance(connection, sqlite3.Connection)
 
 def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
-    """Get comprehensive database schema with relationships - works with both MySQL and SQLite"""
+    """Get database schema - works with MySQL and SQLite"""
     schema = {}
     cursor = None
     is_sqlite = is_sqlite_connection(connection)
-   
     try:
         cursor = connection.cursor()
-       
-        # Get all tables or specific table
         if table_name:
             tables = [table_name]
         else:
@@ -420,16 +363,11 @@ def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
             else:
                 cursor.execute("SHOW TABLES")
                 tables = [table[0] for table in cursor.fetchall()]
-       
         for table in tables:
             columns = []
-           
-            # Get columns - different syntax for SQLite vs MySQL
             if is_sqlite:
-                # SQLite uses PRAGMA table_info
                 cursor.execute(f"PRAGMA table_info({table})")
                 for col in cursor.fetchall():
-                    # SQLite PRAGMA returns: cid, name, type, notnull, dflt_value, pk
                     columns.append({
                         'name': col[1],
                         'type': col[2],
@@ -439,7 +377,6 @@ def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
                         'extra': ''
                     })
             else:
-                # MySQL uses DESCRIBE
                 cursor.execute(f"DESCRIBE {table}")
                 for col in cursor.fetchall():
                     columns.append({
@@ -450,26 +387,18 @@ def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
                         'default': col[4],
                         'extra': col[5]
                     })
-           
-            # Get foreign key relationships
             relationships = []
             if is_sqlite:
-                # SQLite uses PRAGMA foreign_key_list
                 cursor.execute(f"PRAGMA foreign_key_list({table})")
                 for rel in cursor.fetchall():
-                    # SQLite PRAGMA returns: id, seq, table, from, to, on_update, on_delete, match
                     relationships.append({
                         'column': rel[3],
                         'references_table': rel[2],
                         'references_column': rel[4]
                     })
             else:
-                # MySQL uses INFORMATION_SCHEMA
                 cursor.execute(f"""
-                    SELECT
-                        COLUMN_NAME,
-                        REFERENCED_TABLE_NAME,
-                        REFERENCED_COLUMN_NAME
+                    SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
                     FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                     WHERE TABLE_SCHEMA = DATABASE()
                     AND TABLE_NAME = '{table}'
@@ -481,17 +410,13 @@ def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
                         'references_table': rel[1],
                         'references_column': rel[2]
                     })
-           
-            # Get sample data (first 3 rows)
             cursor.execute(f"SELECT * FROM {table} LIMIT 3")
             sample_data = cursor.fetchall()
-           
             schema[table] = {
                 'columns': columns,
                 'relationships': relationships,
                 'sample_data': sample_data
             }
-       
         return schema
     except Exception as e:
         st.error(f"Schema fetch error: {e}")
@@ -503,13 +428,10 @@ def get_database_schema(connection, table_name: Optional[str] = None) -> Dict:
 def format_schema_for_llm(schema: Dict, tables_to_include: Optional[List[str]] = None) -> str:
     """Format schema for LLM"""
     schema_text = "DATABASE SCHEMA:\n\n"
-   
-    # Filter tables if specified
     if tables_to_include:
         filtered_schema = {k: v for k, v in schema.items() if k in tables_to_include}
     else:
         filtered_schema = schema
-   
     for table_name, table_info in filtered_schema.items():
         schema_text += f"TABLE: {table_name}\n"
         schema_text += "Columns:\n"
@@ -517,22 +439,17 @@ def format_schema_for_llm(schema: Dict, tables_to_include: Optional[List[str]] =
             key_info = f" [{col['key']}]" if col['key'] else ""
             null_info = " (nullable)" if col['null'] == 'YES' else " (required)"
             schema_text += f" - {col['name']}: {col['type']}{key_info}{null_info}\n"
-       
         if table_info.get('relationships'):
             schema_text += "\nRelationships:\n"
             for rel in table_info['relationships']:
                 schema_text += f" - {rel['column']} → {rel['references_table']}.{rel['references_column']}\n"
-       
         if table_info.get('sample_data'):
             schema_text += f"\nSample Data ({len(table_info['sample_data'])} rows):\n"
             col_names = [col['name'] for col in table_info['columns']]
             for row in table_info['sample_data'][:3]:
                 row_dict = dict(zip(col_names, row))
                 schema_text += f" {row_dict}\n"
-       
         schema_text += "\n" + "="*80 + "\n\n"
-   
-    # Add relationship summary for multi-table queries
     if len(filtered_schema) > 1:
         schema_text += "RELATIONSHIP SUMMARY:\n"
         for table_name, table_info in filtered_schema.items():
@@ -540,12 +457,11 @@ def format_schema_for_llm(schema: Dict, tables_to_include: Optional[List[str]] =
                 for rel in table_info['relationships']:
                     schema_text += f" {table_name}.{rel['column']} → {rel['references_table']}.{rel['references_column']}\n"
         schema_text += "\n"
-   
     return schema_text
 
-# ================= CONTEXT MANAGEMENT FUNCTIONS =================
+# ================= CONTEXT MANAGEMENT =================
 def compute_embedding(text: str) -> np.ndarray:
-    """Compute embedding for text using sentence transformer"""
+    """Compute embedding for text"""
     return embedding_model.encode(text)
 
 def find_semantically_similar_messages(
@@ -553,14 +469,10 @@ def find_semantically_similar_messages(
     chat_history: List[Dict],
     top_k: int = 3
 ) -> List[Dict]:
-    """Find top-k semantically similar Q&A pairs from chat history"""
+    """Find top-k semantically similar Q&A pairs"""
     if not chat_history:
         return []
-   
-    # Compute embedding for current question
     current_embedding = compute_embedding(current_question)
-   
-    # Compute embeddings for all historical questions
     similarities = []
     for turn in chat_history:
         question_embedding = compute_embedding(turn['question'])
@@ -569,37 +481,31 @@ def find_semantically_similar_messages(
             question_embedding.reshape(1, -1)
         )[0][0]
         similarities.append((similarity, turn))
-   
-    # Sort by similarity and get top-k
     similarities.sort(key=lambda x: x[0], reverse=True)
     return [turn for _, turn in similarities[:top_k]]
 
 def summarize_old_messages(messages: List[Dict]) -> str:
-    """Summarize older messages using Groq Llama"""
+    """Summarize older messages using Groq"""
     if not messages:
         return ""
-   
-    # Prepare summary request
     summary_text = "Previous conversation summary:\n"
     for msg in messages:
         response_preview = msg.get('response', '')[:200] if msg.get('response') else ''
         summary_text += f"Q: {msg['question']}\nA: {response_preview}...\n\n"
-   
     try:
         client = Groq(api_key=st.secrets["groq"]["api_key"])
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{
                 "role": "user",
-                "content": f"Summarize this conversation history concisely, focusing on key context and user preferences:\n\n{summary_text}"
+                "content": f"Summarize this conversation history concisely:\n\n{summary_text}"
             }],
             max_tokens=500,
             temperature=0.5
         )
         return response.choices[0].message.content
     except Exception as e:
-        st.warning(f"Summarization failed: {e}")
-        return "Previous conversation context available but not summarized."
+        return "Previous conversation context available."
 
 def build_optimized_context(
     chat_history: List[Dict],
@@ -607,12 +513,7 @@ def build_optimized_context(
     recent_count: int = 5,
     semantic_count: int = 3
 ) -> Tuple[str, Dict]:
-    """
-    Build optimized context with:
-    1. Recent 5 messages (as is)
-    2. Summary of older messages
-    3. 3 semantically similar Q&As
-    """
+    """Build optimized context"""
     context_parts = []
     stats = {
         'total_messages': len(chat_history),
@@ -620,14 +521,10 @@ def build_optimized_context(
         'summarized_count': 0,
         'semantic_count': 0
     }
-   
     if not chat_history:
         return "", stats
-   
-    # 1. Recent messages (last 5)
     recent_messages = chat_history[-recent_count:] if len(chat_history) >= recent_count else chat_history
     stats['recent_count'] = len(recent_messages)
-   
     if recent_messages:
         context_parts.append("RECENT CONVERSATION (Last 5 messages):")
         for turn in recent_messages:
@@ -637,19 +534,14 @@ def build_optimized_context(
             if turn.get('query_generated'):
                 context_parts.append(f"SQL: {turn['query_generated']}")
         context_parts.append("")
-   
-    # 2. Summary of older messages
     older_messages = chat_history[:-recent_count] if len(chat_history) > recent_count else []
     stats['summarized_count'] = len(older_messages)
-   
     if older_messages:
         summary = summarize_old_messages(older_messages)
         if summary:
             context_parts.append("EARLIER CONVERSATION SUMMARY:")
             context_parts.append(summary)
             context_parts.append("")
-   
-    # 3. Semantically similar messages (excluding recent ones)
     older_for_semantic = chat_history[:-recent_count] if len(chat_history) > recent_count else []
     similar_messages = find_semantically_similar_messages(
         current_question,
@@ -657,7 +549,6 @@ def build_optimized_context(
         top_k=semantic_count
     )
     stats['semantic_count'] = len(similar_messages)
-   
     if similar_messages:
         context_parts.append("RELEVANT SIMILAR CONVERSATIONS:")
         for i, turn in enumerate(similar_messages, 1):
@@ -667,17 +558,280 @@ def build_optimized_context(
             if turn.get('query_generated'):
                 context_parts.append(f" SQL: {turn['query_generated']}")
         context_parts.append("")
-   
     context = "\n".join(context_parts)
     return context, stats
 
-# ================= LLM-BASED QUERY INTENT ANALYSIS =================
+# ================= NEW: DATA ANALYSIS FUNCTIONS =================
+def analyze_dataframe_structure(df: pd.DataFrame) -> Dict:
+    """Analyze DataFrame to determine optimal display strategy"""
+    if df.empty:
+        return {'type': 'empty', 'display_method': 'none'}
+    
+    # Detect column types
+    numeric_cols = df.select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+    
+    # Detect common patterns
+    has_name = any(col.lower() in ['name', 'product_name', 'student_name', 'employee_name', 'customer_name'] 
+                   for col in df.columns)
+    has_price = any(col.lower() in ['price', 'cost', 'amount', 'salary', 'revenue'] 
+                    for col in df.columns)
+    has_id = any(col.lower() in ['id', 'product_id', 'student_id', 'employee_id', 'customer_id'] 
+                 for col in df.columns)
+    
+    # Determine data type
+    data_type = 'unknown'
+    if any(col.lower() in ['product_name', 'brand', 'category'] for col in df.columns):
+        data_type = 'product'
+    elif any(col.lower() in ['student_name', 'grade', 'marks', 'score'] for col in df.columns):
+        data_type = 'student'
+    elif any(col.lower() in ['employee_name', 'designation', 'department'] for col in df.columns):
+        data_type = 'employee'
+    elif any(col.lower() in ['customer_name', 'order', 'purchase'] for col in df.columns):
+        data_type = 'customer'
+    
+    # Determine display method
+    row_count = len(df)
+    col_count = len(df.columns)
+    
+    display_method = 'table'  # default
+    if row_count <= 50 and has_name:
+        display_method = 'card'
+    elif row_count > 50:
+        display_method = 'table_paginated'
+    
+    return {
+        'type': data_type,
+        'display_method': display_method,
+        'row_count': row_count,
+        'col_count': col_count,
+        'numeric_cols': numeric_cols,
+        'categorical_cols': categorical_cols,
+        'date_cols': date_cols,
+        'has_name': has_name,
+        'has_price': has_price,
+        'has_id': has_id
+    }
+
+def display_data_card(row: Dict, idx: int, turn_idx: int, data_analysis: Dict):
+    """Universal card display - adapts to any data type"""
+    # Determine primary identifier
+    primary_key = None
+    primary_value = "Item"
+    
+    # Try to find a name column
+    name_cols = [col for col in row.keys() if 'name' in col.lower()]
+    if name_cols:
+        primary_key = name_cols[0]
+        primary_value = row[primary_key]
+    elif data_analysis['has_id']:
+        id_cols = [col for col in row.keys() if 'id' in col.lower()]
+        if id_cols:
+            primary_key = id_cols[0]
+            primary_value = f"ID: {row[primary_key]}"
+    else:
+        primary_key = list(row.keys())[0]
+        primary_value = row[primary_key]
+    
+    # Find secondary info for header
+    secondary_info = []
+    
+    # Look for price/amount columns
+    if data_analysis['has_price']:
+        price_cols = [col for col in row.keys() if any(p in col.lower() for p in ['price', 'cost', 'amount', 'salary', 'revenue'])]
+        for col in price_cols:
+            if row[col] is not None and row[col] != '':
+                try:
+                    val = float(row[col])
+                    secondary_info.append(f"₹{val:,.2f}")
+                except:
+                    secondary_info.append(str(row[col]))
+                break
+    
+    # Look for category/type columns
+    category_cols = [col for col in row.keys() if any(c in col.lower() for c in ['category', 'type', 'department', 'grade', 'class'])]
+    for col in category_cols:
+        if row[col] is not None and row[col] != '':
+            secondary_info.append(str(row[col]))
+            break
+    
+    # Build header
+    header_text = f"📋 {primary_value}"
+    if secondary_info:
+        header_text += " | " + " | ".join(secondary_info[:2])
+    
+    expander_key = f"data_card_{turn_idx}_{idx}"
+    
+    with st.expander(header_text, expanded=False):
+        all_keys = list(row.keys())
+        displayed_keys = [primary_key] if primary_key else []
+        
+        # Display primary info
+        st.markdown("### 📌 Primary Information")
+        col1, col2 = st.columns(2)
+        
+        col_idx = 0
+        for key in all_keys[:6]:
+            if row[key] is not None and row[key] != '':
+                with (col1 if col_idx % 2 == 0 else col2):
+                    value = row[key]
+                    if isinstance(value, (int, float)):
+                        if 'price' in key.lower() or 'cost' in key.lower() or 'salary' in key.lower():
+                            st.markdown(f"**{key.replace('_', ' ').title()}:** ₹{value:,.2f}")
+                        else:
+                            st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
+                    else:
+                        st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
+                displayed_keys.append(key)
+                col_idx += 1
+        
+        # Display remaining attributes
+        remaining_keys = [k for k in all_keys if k not in displayed_keys]
+        if remaining_keys:
+            st.markdown("### 📋 Additional Details")
+            for key in remaining_keys:
+                if row[key] is not None and row[key] != '':
+                    value = row[key]
+                    if isinstance(value, (int, float)):
+                        if 'price' in key.lower() or 'cost' in key.lower() or 'salary' in key.lower():
+                            st.markdown(f"**{key.replace('_', ' ').title()}:** ₹{value:,.2f}")
+                        else:
+                            st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
+                    else:
+                        st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
+
+def create_improved_visualization(df: pd.DataFrame, question: str, data_analysis: Dict) -> Optional[go.Figure]:
+    """Create intelligent visualization based on data and query"""
+    if df.empty or len(df) > 100:
+        return None
+    
+    question_lower = question.lower()
+    numeric_cols = data_analysis['numeric_cols']
+    categorical_cols = data_analysis['categorical_cols']
+    
+    if not numeric_cols:
+        return None
+    
+    fig = None
+    
+    # 1. Time series
+    if data_analysis['date_cols'] and numeric_cols:
+        date_col = data_analysis['date_cols'][0]
+        value_col = numeric_cols[0]
+        fig = px.line(
+            df,
+            x=date_col,
+            y=value_col,
+            title=f"{value_col.replace('_', ' ').title()} Over Time",
+            markers=True
+        )
+        fig.update_traces(line_color='#667eea', line_width=3)
+    
+    # 2. Ranking/Comparison - Bar chart
+    elif any(word in question_lower for word in ['top', 'best', 'most', 'highest', 'lowest', 'compare', 'rank']):
+        if categorical_cols and numeric_cols:
+            cat_col = categorical_cols[0]
+            num_col = numeric_cols[0]
+            plot_df = df.nlargest(min(15, len(df)), num_col)
+            fig = px.bar(
+                plot_df,
+                x=cat_col,
+                y=num_col,
+                title=f"Top {len(plot_df)} by {num_col.replace('_', ' ').title()}",
+                color=num_col,
+                color_continuous_scale='viridis',
+                text=num_col
+            )
+            fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+            fig.update_layout(xaxis_tickangle=-45, showlegend=False)
+    
+    # 3. Distribution - Donut chart
+    elif any(word in question_lower for word in ['distribution', 'breakdown', 'percentage', 'share', 'proportion']):
+        if categorical_cols and numeric_cols:
+            cat_col = categorical_cols[0]
+            num_col = numeric_cols[0]
+            if len(df) > 15:
+                plot_df = df.groupby(cat_col)[num_col].sum().reset_index().nlargest(10, num_col)
+            else:
+                plot_df = df
+            fig = px.pie(
+                plot_df,
+                names=cat_col,
+                values=num_col,
+                title=f"Distribution of {num_col.replace('_', ' ').title()}",
+                hole=0.4
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+    
+    # 4. Count/Frequency
+    elif any(word in question_lower for word in ['count', 'number of', 'how many', 'frequency']):
+        if categorical_cols:
+            cat_col = categorical_cols[0]
+            count_df = df[cat_col].value_counts().reset_index()
+            count_df.columns = [cat_col, 'count']
+            fig = px.bar(
+                count_df.head(15),
+                x=cat_col,
+                y='count',
+                title=f"Frequency of {cat_col.replace('_', ' ').title()}",
+                color='count',
+                color_continuous_scale='blues',
+                text='count'
+            )
+            fig.update_traces(texttemplate='%{text}', textposition='outside')
+            fig.update_layout(xaxis_tickangle=-45, showlegend=False)
+    
+    # 5. Scatter for correlation
+    elif len(numeric_cols) >= 2 and len(df) <= 100:
+        fig = px.scatter(
+            df,
+            x=numeric_cols[0],
+            y=numeric_cols[1],
+            title=f"{numeric_cols[0].replace('_', ' ').title()} vs {numeric_cols[1].replace('_', ' ').title()}",
+            color=categorical_cols[0] if categorical_cols else None,
+            hover_data=df.columns.tolist()
+        )
+    
+    # 6. Default horizontal bar
+    elif categorical_cols and numeric_cols:
+        cat_col = categorical_cols[0]
+        num_col = numeric_cols[0]
+        plot_df = df.head(15)
+        fig = px.bar(
+            plot_df,
+            y=cat_col,
+            x=num_col,
+            orientation='h',
+            title=f"{cat_col.replace('_', ' ').title()} Analysis",
+            color=num_col,
+            color_continuous_scale='teal',
+            text=num_col
+        )
+        fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+    
+    # Apply consistent styling
+    if fig:
+        fig.update_layout(
+            height=500,
+            font=dict(size=12),
+            title_font_size=16,
+            hovermode='closest',
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+        )
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+    
+    return fig
+# CONTINUATION OF SQL ASSISTANT PRO - PART 2
+# This continues from sql_assistant_pro_complete.py
+
+# ================= LLM QUERY INTENT ANALYSIS =================
 def analyze_query_intent_with_llm(question: str, schema: Dict) -> Dict:
-    """Use LLM to analyze query intent and determine table requirements"""
+    """Use LLM to analyze query intent"""
     try:
         client = Groq(api_key=st.secrets["groq"]["api_key"])
-       
-        # Prepare schema summary for LLM
         schema_summary = "Available Tables:\n"
         for table_name, table_info in schema.items():
             columns = [col['name'] for col in table_info['columns']]
@@ -685,120 +839,79 @@ def analyze_query_intent_with_llm(question: str, schema: Dict) -> Dict:
             if table_info.get('relationships'):
                 for rel in table_info['relationships']:
                     schema_summary += f" → {rel['column']} links to {rel['references_table']}.{rel['references_column']}\n"
-       
+        
         analysis_prompt = f"""Analyze this database query intent:
 {schema_summary}
 User Question: "{question}"
 Determine:
-1. Which tables are needed to answer this question?
-2. Does it require a JOIN between tables, or can it be answered from a single table?
-3. What is the query type (single_table, multi_table, aggregation, etc.)?
-Return your analysis in this JSON format:
+1. Which tables are needed?
+2. Requires JOIN?
+3. Query type?
+Return JSON:
 {{
     "requires_join": true/false,
-    "tables_needed": ["table1", "table2"],
-    "intent_type": "single_table" or "multi_table",
-    "reasoning": "Brief explanation of your analysis"
+    "tables_needed": ["table1"],
+    "intent_type": "single_table",
+    "reasoning": "explanation"
 }}
-IMPORTANT: Prefer single-table queries when possible for better performance. Only use JOIN when data from multiple tables is absolutely necessary.
-Return ONLY the JSON, no additional text."""
+ONLY JSON, no extra text."""
+        
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{
-                "role": "user",
-                "content": analysis_prompt
-            }],
+            messages=[{"role": "user", "content": analysis_prompt}],
             max_tokens=500,
             temperature=0.1
         )
-       
-        # Parse response
         result = response.choices[0].message.content.strip()
-        # Remove markdown code blocks if present
         result = result.replace('```json', '').replace('```', '').strip()
-       
         analysis = json.loads(result)
-       
-        # Validate and return
         return {
             'requires_join': analysis.get('requires_join', False),
             'tables_needed': analysis.get('tables_needed', list(schema.keys())),
             'intent_type': analysis.get('intent_type', 'unknown'),
             'reasoning': analysis.get('reasoning', 'LLM analysis completed')
         }
-       
     except Exception as e:
-        st.warning(f"LLM intent analysis failed, using fallback: {e}")
-        # Fallback: use all tables
         return {
             'requires_join': False,
             'tables_needed': list(schema.keys()),
             'intent_type': 'unknown',
-            'reasoning': 'Fallback analysis - using all available tables'
+            'reasoning': 'Fallback analysis'
         }
 
-# ================= SMART QUERY GENERATION =================
+# ================= QUERY GENERATION =================
 def generate_sql_query(question: str, schema_text: str, context: str, intent_analysis: Optional[Dict] = None, is_sqlite: bool = False) -> Dict:
-    """Generate SQL query using Groq Llama with smart multi-table logic"""
+    """Generate SQL query using Groq"""
     try:
         client = Groq(api_key=st.secrets["groq"]["api_key"])
-       
-        # Determine SQL dialect
         sql_dialect = "SQLite" if is_sqlite else "MySQL"
-       
-        # Enhanced system prompt for smart querying
-        system_prompt = f"""You are an expert SQL query generator with advanced optimization skills for {sql_dialect}.
-CRITICAL MULTI-TABLE INTELLIGENCE:
-1. ALWAYS analyze if the question can be answered from a SINGLE table
-2. ONLY use JOINs when the question REQUIRES data from multiple tables
-3. Prefer single-table queries whenever possible for performance
-4. Strictly use columns from tables of database
-CRITICAL CONTEXT CAPTURING INTELLIGENCE:
-1. ALWAYS analyze conversation history and accumulated filters
-2. For REFINEMENT queries: Combine ALL previous filters with new ones
-3. For CONTEXT RESET: Ignore all previous filters and start fresh
-4. For ANALYTICAL queries: Apply filters then aggregate
-CONTEXT CONTINUITY EXAMPLES:
-User: "I want kurti" → SELECT * FROM products WHERE category='kurti'
-User: "pink" (REFINEMENT) → SELECT * FROM products WHERE category='kurti' AND color='pink'
-User: "M size" (REFINEMENT) → SELECT * FROM products WHERE category='kurti' AND color='pink' AND size='M'
-User: "show me shoes" (CONTEXT RESET) → SELECT * FROM products WHERE category='shoes'
-DECISION FRAMEWORK:
-- Question about product attributes (name, price, category, brand, color, etc.) → Use catalog table ONLY
-- Question about sales metrics (quantity sold, revenue, best-sellers) → May need JOIN with sales table
-- Question combining product info WITH sales data → Use JOIN
-QUERY REQUIREMENTS:
-- Use proper JOINs with clear ON conditions when needed
-- Include all relevant columns in SELECT
-- Use WHERE clauses for filtering
-- Add ORDER BY for rankings, to avoid long response keep limit of 10-15
-- Use DISTINCT to avoid duplicates when joining
-- Always use table aliases for clarity in multi-table queries
-- Return ONLY valid {sql_dialect} query without explanation, markdown, or code blocks"""
-        # Build user prompt with context and schema
+        
+        system_prompt = f"""You are an expert SQL query generator for {sql_dialect}.
+CRITICAL RULES:
+1. Prefer single-table queries
+2. Only JOIN when absolutely necessary
+3. Use proper WHERE clauses
+4. LIMIT results to 10-15
+5. Return ONLY valid SQL query, no markdown
+6. For refinements, accumulate ALL filters"""
+
         user_prompt = f"""DATABASE SCHEMA:
 {schema_text}
 CONVERSATION CONTEXT:
 {context}
 CURRENT QUESTION: {question}
 """
-       
-        # Add intent analysis if available
+        
         if intent_analysis:
             user_prompt += f"""
-QUERY ANALYSIS (from LLM):
-Intent Type: {intent_analysis['intent_type']}
-Requires JOIN: {intent_analysis['requires_join']}
-Tables Needed: {', '.join(intent_analysis['tables_needed'])}
-Reasoning: {intent_analysis['reasoning']}
+ANALYSIS:
+Intent: {intent_analysis['intent_type']}
+JOIN needed: {intent_analysis['requires_join']}
+Tables: {', '.join(intent_analysis['tables_needed'])}
 """
-       
-        user_prompt += """
-Generate the optimal SQL query following all the rules above.
-IMPORTANT:
-- If this is a refinement, include ALL accumulated filters in WHERE clause
-- If analytical, use appropriate aggregate functions
-- Return ONLY the SQL query, no explanations."""
+        
+        user_prompt += "\nGenerate optimal SQL query. ONLY the query, no explanation."
+        
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -808,30 +921,20 @@ IMPORTANT:
             max_tokens=1000,
             temperature=0.1
         )
-       
+        
         query = response.choices[0].message.content.strip()
-       
-        # Clean up query - remove markdown code blocks if present
         query = query.replace('```sql', '').replace('```', '').strip()
-       
-        # Remove any explanatory text before or after the query
         lines = query.split('\n')
         sql_lines = []
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and not line.startswith('--'):
                 sql_lines.append(line)
-       
         query = ' '.join(sql_lines)
-       
-        # Validate query
+        
         if not query.upper().startswith('SELECT'):
-            return {
-                "success": False,
-                "error": "Generated query is not a SELECT statement",
-                "query": query
-            }
-       
+            return {"success": False, "error": "Not a SELECT statement", "query": query}
+        
         return {
             "success": True,
             "query": query,
@@ -842,59 +945,78 @@ IMPORTANT:
                 "user_prompt": user_prompt
             }
         }
-       
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "query": None
-        }
+        return {"success": False, "error": str(e), "query": None}
 
 def execute_query(connection, query: str) -> Dict:
-    """Execute SQL query and return results - works with both MySQL and SQLite"""
+    """Execute SQL query"""
     cursor = None
-    is_sqlite = is_sqlite_connection(connection)
-   
     try:
         cursor = connection.cursor()
         cursor.execute(query)
-       
-        # Get column names
         columns = [desc[0] for desc in cursor.description]
-       
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=columns)
-       
-        return {
-            "success": True,
-            "data": df,
-            "row_count": len(df)
-        }
+        return {"success": True, "data": df, "row_count": len(df)}
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "data": None
-        }
+        return {"success": False, "error": str(e), "data": None}
     finally:
         if cursor:
             cursor.close()
 
-# ================= CHAT MANAGEMENT FUNCTIONS =================
+# ================= RESPONSE GENERATION =================
+def generate_db_response_with_presentation(
+    question: str,
+    query: str,
+    result: Dict,
+    context: str
+) -> Tuple[str, Optional[pd.DataFrame], Optional[go.Figure], Dict]:
+    """Generate response with visualization"""
+    try:
+        client = Groq(api_key=st.secrets["groq"]["api_key"])
+        df = result.get("data")
+        if df is None or df.empty:
+            return "No results found.", None, None, {}
+        
+        # Analyze data structure
+        data_analysis = analyze_dataframe_structure(df)
+        
+        data_summary = f"Query returned {len(df)} rows with columns: {', '.join(df.columns.tolist())}\n\n"
+        data_summary += f"Sample data:\n{df.head(10).to_string()}"
+        
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{
+                "role": "user",
+                "content": f"""Context: {context}
+Question: {question}
+SQL: {query}
+Results: {data_summary}
+Provide a natural, conversational summary. Be concise."""
+            }],
+            max_tokens=800,
+            temperature=0.7
+        )
+        
+        summary = response.choices[0].message.content
+        visualization = create_improved_visualization(df, question, data_analysis)
+        
+        return summary, df, visualization, data_analysis
+    except Exception as e:
+        st.error(f"Response generation error: {e}")
+        data_analysis = analyze_dataframe_structure(df) if df is not None else {}
+        return f"Found {len(df)} results.", df, None, data_analysis
+
+# ================= CHAT MANAGEMENT =================
 def create_new_chat(user_id: int, title: Optional[str], first_question: Optional[str]) -> Optional[int]:
-    """Create new chat session"""
+    """Create new chat"""
     connection = get_auth_db_connection()
     if not connection:
-        st.error("Failed to connect to database for chat creation")
         return None
-   
     try:
         cursor = connection.cursor()
         chat_title = title or (first_question[:50] + "..." if first_question else "New Chat")
-        cursor.execute(
-            "INSERT INTO chats (user_id, title) VALUES (%s, %s)",
-            (user_id, chat_title)
-        )
+        cursor.execute("INSERT INTO chats (user_id, title) VALUES (%s, %s)", (user_id, chat_title))
         connection.commit()
         return cursor.lastrowid
     except Error as e:
@@ -906,11 +1028,10 @@ def create_new_chat(user_id: int, title: Optional[str], first_question: Optional
             connection.close()
 
 def get_user_chats(user_id: int) -> List[Dict]:
-    """Get all chats for user"""
+    """Get all user chats"""
     connection = get_auth_db_connection()
     if not connection:
         return []
-   
     try:
         cursor = connection.cursor(dictionary=True)
         cursor.execute(
@@ -927,11 +1048,10 @@ def get_user_chats(user_id: int) -> List[Dict]:
             connection.close()
 
 def get_chat_history(chat_id: int, user_id: int) -> List[Dict]:
-    """Get chat history with verification"""
+    """Get chat history"""
     connection = get_auth_db_connection()
     if not connection:
         return []
-   
     try:
         cursor = connection.cursor(dictionary=True)
         cursor.execute("""
@@ -941,10 +1061,7 @@ def get_chat_history(chat_id: int, user_id: int) -> List[Dict]:
             WHERE ch.chat_id = %s AND c.user_id = %s
             ORDER BY ch.timestamp ASC
         """, (chat_id, user_id))
-       
         results = cursor.fetchall()
-       
-        # Parse result_data JSON back to DataFrame if it exists
         for result in results:
             if result.get('result_data'):
                 try:
@@ -953,7 +1070,6 @@ def get_chat_history(chat_id: int, user_id: int) -> List[Dict]:
                     result['result_df'] = None
             else:
                 result['result_df'] = None
-       
         return results
     except Error as e:
         st.error(f"History fetch error: {e}")
@@ -964,26 +1080,19 @@ def get_chat_history(chat_id: int, user_id: int) -> List[Dict]:
             connection.close()
 
 def save_chat_turn(chat_id: int, user_id: int, question: str, query: Optional[str], response: str, result_df: Optional[pd.DataFrame] = None) -> bool:
-    """Save chat turn with verification and result data"""
+    """Save chat turn"""
     connection = get_auth_db_connection()
     if not connection:
         return False
-   
     try:
         cursor = connection.cursor()
-       
-        # Verify chat belongs to user
         cursor.execute("SELECT user_id FROM chats WHERE chat_id = %s", (chat_id,))
         result = cursor.fetchone()
-       
         if not result or result[0] != user_id:
             return False
-       
-        # Convert DataFrame to JSON if it exists
         result_data = None
         if result_df is not None and not result_df.empty:
             result_data = result_df.to_json()
-       
         cursor.execute(
             "INSERT INTO chat_history (chat_id, user_id, question, query_generated, response, result_data) VALUES (%s, %s, %s, %s, %s, %s)",
             (chat_id, user_id, question, query, response, result_data)
@@ -999,264 +1108,91 @@ def save_chat_turn(chat_id: int, user_id: int, question: str, query: Optional[st
             connection.close()
 
 def rename_chat(chat_id: int, user_id: int, new_title: str) -> Tuple[bool, str]:
-    """Rename chat with verification"""
+    """Rename chat"""
     connection = get_auth_db_connection()
     if not connection:
-        return False, "Database connection failed"
-   
+        return False, "Connection failed"
     try:
         cursor = connection.cursor()
-        cursor.execute(
-            "UPDATE chats SET title = %s WHERE chat_id = %s AND user_id = %s",
-            (new_title, chat_id, user_id)
-        )
+        cursor.execute("UPDATE chats SET title = %s WHERE chat_id = %s AND user_id = %s", (new_title, chat_id, user_id))
         connection.commit()
-       
         if cursor.rowcount > 0:
-            return True, "Chat renamed successfully"
-        return False, "Chat not found or access denied"
+            return True, "Renamed successfully"
+        return False, "Not found"
     except Error as e:
-        return False, f"Rename error: {e}"
+        return False, f"Error: {e}"
     finally:
         if connection and connection.is_connected():
             cursor.close()
             connection.close()
 
 def delete_chat(chat_id: int, user_id: int) -> Tuple[bool, str]:
-    """Delete chat with verification"""
+    """Delete chat"""
     connection = get_auth_db_connection()
     if not connection:
-        return False, "Database connection failed"
-   
+        return False, "Connection failed"
     try:
         cursor = connection.cursor()
-       
-        # Delete history first (handled by CASCADE, but being explicit)
-        cursor.execute(
-            "DELETE FROM chat_history WHERE chat_id = %s AND user_id = %s",
-            (chat_id, user_id)
-        )
-       
-        # Delete chat
-        cursor.execute(
-            "DELETE FROM chats WHERE chat_id = %s AND user_id = %s",
-            (chat_id, user_id)
-        )
+        cursor.execute("DELETE FROM chat_history WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
+        cursor.execute("DELETE FROM chats WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
         connection.commit()
-       
         if cursor.rowcount > 0:
-            return True, "Chat deleted successfully"
-        return False, "Chat not found or access denied"
+            return True, "Deleted successfully"
+        return False, "Not found"
     except Error as e:
-        return False, f"Delete error: {e}"
+        return False, f"Error: {e}"
     finally:
         if connection and connection.is_connected():
             cursor.close()
             connection.close()
 
 def generate_smart_chat_title(question: str) -> str:
-    """Generate smart chat title from first question"""
-    words = question.split()
-    if len(words) <= 5:
+    """Generate title from question"""
+    if len(question) <= 50:
         return question
-    return question[:50] + "..." if len(question) > 50 else question
+    return question[:50] + "..."
 
-# ================= RESPONSE GENERATION =================
-def generate_db_response_with_presentation(
-    question: str,
-    query: str,
-    result: Dict,
-    context: str
-) -> Tuple[str, Optional[pd.DataFrame], Optional[go.Figure]]:
-    """Generate natural language response with visualization using Groq Llama"""
-    try:
-        client = Groq(api_key=st.secrets["groq"]["api_key"])
-       
-        df = result.get("data")
-        if df is None or df.empty:
-            return "No results found for your query.", None, None
-       
-        # Dynamic sample data: Use fewer rows for large datasets
-        sample_rows = min(5, len(df))  # Show max 5 rows in summary
-        data_summary = f"Query returned {len(df)} rows with columns: {', '.join(df.columns.tolist())}\n\n"
-        data_summary += f"Sample data (first {sample_rows} rows):\n{df.head(sample_rows).to_string()}"
-       
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{
-                "role": "user",
-                "content": f"""Context: {context}
-Question: {question}
-SQL Query Executed: {query}
-Results: {data_summary}
-Provide a natural, conversational response summarizing these results. Be concise but informative. Highlight key findings."""
-            }],
-            max_tokens=800,
-            temperature=0.7
-        )
-       
-        summary = response.choices[0].message.content
-       
-        # Generate visualization if appropriate
-        visualization = create_visualization_if_applicable(df, question)
-       
-        return summary, df, visualization
-       
-    except Exception as e:
-        st.error(f"Response generation error: {e}")
-        return f"Found {len(df)} results.", df, None
-
-def create_visualization_if_applicable(df: pd.DataFrame, question: str) -> Optional[go.Figure]:
-    """Create appropriate visualization based on data and question - Enhanced for robustness"""
-    if df.empty or len(df) > 50:  # Reduced threshold for performance
-        return None
-   
-    question_lower = question.lower()
-   
-    # Detect column types more robustly
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    date_cols = df.select_dtypes(include=['datetime']).columns.tolist()
-   
-    if not numeric_cols:
-        return None
-   
-    # Improved detection for top-N or ranking queries
-    if any(word in question_lower for word in ['top', 'best', 'most', 'highest', 'lowest', 'rank', 'order']):
-        # Find likely x (categorical) and y (numeric) columns
-        if categorical_cols and numeric_cols:
-            x_col = categorical_cols[0]  # Default to first categorical
-            y_col = numeric_cols[0]      # Default to first numeric
-            # Heuristic: Prefer 'name' or 'id' for x, 'score', 'marks', 'price' for y
-            if any('name' in col.lower() or 'id' in col.lower() for col in categorical_cols):
-                x_col = next((col for col in categorical_cols if 'name' in col.lower() or 'id' in col.lower()), x_col)
-            if any('marks' in col.lower() or 'score' in col.lower() or 'price' in col.lower() or 'salary' in col.lower() for col in numeric_cols):
-                y_col = next((col for col in numeric_cols if any(kw in col.lower() for kw in ['marks', 'score', 'price', 'salary'])), y_col)
-            
-            fig = px.bar(
-                df.head(20),  # Limit for performance
-                x=x_col,
-                y=y_col,
-                title=f"Top Results: {x_col.title()} by {y_col.title()}",
-                color=y_col,
-                color_continuous_scale='viridis'
-            )
-            fig.update_layout(xaxis_tickangle=-45, showlegend=False)
-            return fig
-   
-    # Distribution or breakdown
-    if any(word in question_lower for word in ['distribution', 'breakdown', 'by', 'group']):
-        if categorical_cols and numeric_cols:
-            fig = px.pie(
-                df.head(10),
-                names=categorical_cols[0],
-                values=numeric_cols[0],
-                title=f"Distribution by {categorical_cols[0].title()}"
-            )
-            return fig
-   
-    # Basic line chart for time-series if dates present
-    if date_cols and numeric_cols:
-        fig = px.line(
-            df,
-            x=date_cols[0],
-            y=numeric_cols[0],
-            title=f"Trend: {numeric_cols[0].title()} over Time"
-        )
-        return fig
-   
-    return None
-
-def is_product_data(df: pd.DataFrame) -> bool:
-    """Enhanced check for product-like data - Requires multiple specific columns"""
-    product_indicators = ['product_name', 'name', 'brand', 'price', 'selling_price', 'category', 'mrp', 'discount']
-    col_lowers = [col.lower() for col in df.columns]
-    # Require at least 3 product indicators, including price-like and category/brand
-    price_like = any(ind in col_lowers for ind in ['price', 'selling_price', 'mrp'])
-    cat_brand_like = any(ind in col_lowers for ind in ['category', 'brand'])
-    count = sum(1 for ind in product_indicators if ind in col_lowers)
-    return count >= 3 and price_like and cat_brand_like
-
-def display_generic_row(row: Dict, idx: int) -> None:
-    """Display a generic row as an expandable card with key-value pairs"""
-    # Use first non-numeric column as header (e.g., name or id)
-    header_key = next((k for k in row if isinstance(row[k], str) and len(str(row[k])) < 50), list(row.keys())[0])
-    header_value = row[header_key]
-    with st.expander(f"📄 Row {idx+1}: {header_value}", expanded=False):
-        st.markdown('<div class="data-row-card">', unsafe_allow_html=True)
-        cols = st.columns(2)
-        for i, (key, value) in enumerate(row.items()):
-            with cols[i % 2]:
-                # Format values: Currency for price-like, dates, etc.
-                if any(kw in key.lower() for kw in ['price', 'salary', 'cost']) and isinstance(value, (int, float)):
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** ₹{value:,.2f}")
-                elif isinstance(value, datetime):
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** {value.strftime('%Y-%m-%d')}")
-                else:
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-# ================= FILE UPLOAD FUNCTIONS =================
+# ================= FILE UPLOAD =================
 def create_persistent_sqlite_from_file(file_bytes: bytes, filename: str, user_id: int) -> Tuple[bool, Optional[str], str]:
-    """Create persistent SQLite database from uploaded file on disk"""
+    """Create persistent SQLite from file"""
     try:
-        # Read file based on extension
         if filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(file_bytes))
-        else:  # Excel
+        else:
             df = pd.read_excel(io.BytesIO(file_bytes))
-       
-        # Generate unique file path for persistence (per user)
         safe_filename = filename.split('.')[0].replace(' ', '_').replace('-', '_').lower()
         db_filename = f"{user_id}_{safe_filename}.db"
         db_path = os.path.join(PERSISTENT_DB_DIR, db_filename)
-       
-        # Create SQLite connection to file (persistent)
         conn = sqlite3.connect(db_path)
-       
-        # Clean column names
         df.columns = [col.strip().replace(' ', '_').replace('-', '_') for col in df.columns]
-       
-        # Generate table name from filename
         table_name = safe_filename
-       
-        # Write to SQLite
         df.to_sql(table_name, conn, index=False, if_exists='replace')
         conn.commit()
         conn.close()
-       
-        return True, table_name, f"Persistent database created at '{db_path}' with table '{table_name}' ({len(df)} rows)"
+        return True, table_name, f"Database created at '{db_path}' with table '{table_name}' ({len(df)} rows)"
     except Exception as e:
-        return False, None, f"File processing error: {str(e)}"
+        return False, None, f"Error: {str(e)}"
 
 def create_temp_database_from_mysql_file(file_bytes: bytes, filename: str, mysql_conn) -> Tuple[bool, Optional[str], str]:
-    """Load uploaded file into custom MySQL database as a new table"""
+    """Load file into MySQL"""
     try:
-        # Read file based on extension
         if filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(file_bytes))
-        else:  # Excel
+        else:
             df = pd.read_excel(io.BytesIO(file_bytes))
-       
-        # Generate table name from filename
         safe_filename = filename.split('.')[0].replace(' ', '_').replace('-', '_').lower()
         table_name = safe_filename
-       
-        # Clean column names
         df.columns = [col.strip().replace(' ', '_').replace('-', '_') for col in df.columns]
-       
-        # Write to MySQL
         from sqlalchemy import create_engine
         engine = create_engine(f"mysql+mysqlconnector://{mysql_conn.user}:{mysql_conn.password}@{mysql_conn.host}:{mysql_conn.port}/{mysql_conn.database}")
         df.to_sql(table_name, engine, if_exists='replace', index=False)
-       
-        return True, table_name, f"Data loaded into custom MySQL table '{table_name}' ({len(df)} rows)"
+        return True, table_name, f"Loaded into MySQL table '{table_name}' ({len(df)} rows)"
     except Exception as e:
-        return False, None, f"File processing error: {str(e)}"
+        return False, None, f"Error: {str(e)}"
 
-# ================= UI HELPER FUNCTIONS =================
+# ================= UI HELPERS =================
 def create_copy_button(text: str, label: str = "Copy") -> str:
-    """Create copy-to-clipboard button"""
+    """Create copy button"""
     escaped_text = text.replace('`', '\\`').replace('$', '\\$').replace('"', '\\"')
     return f"""
     <button onclick="navigator.clipboard.writeText(`{escaped_text}`)" style="
@@ -1266,13 +1202,11 @@ def create_copy_button(text: str, label: str = "Copy") -> str:
         padding: 0.5rem 1rem;
         border-radius: 5px;
         cursor: pointer;
-        font-size: 0.9rem;
-        margin: 0.5rem 0;
     ">{label}</button>
     """
 
 def create_download_link(df: pd.DataFrame, filename: str) -> str:
-    """Create download link for DataFrame"""
+    """Create download link"""
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     return f"""
@@ -1283,83 +1217,13 @@ def create_download_link(df: pd.DataFrame, filename: str) -> str:
         border-radius: 5px;
         text-decoration: none;
         display: inline-block;
-        margin: 0.5rem 0;
     ">📥 Download CSV</a>
     """
 
-def display_product_dropdown(product: Dict, idx: int, turn_idx: int = 0):
-    """Display product in expandable dropdown - Only for confirmed product data"""
-    name = product.get('product_name') or product.get('name', 'Unknown Product')
-    price = product.get('price') or product.get('selling_price', 0) or product.get('mrp', 0)
-   
-    # Get additional quick info for the header
-    brand = product.get('brand', '')
-    category = product.get('category', '')
-   
-    # Create header text
-    header_text = f"🛍️ {name} - ₹{price:,.2f}"
-    if brand:
-        header_text += f" | {brand}"
-    if category:
-        header_text += f" | {category}"
-   
-    # Create unique key for expander
-    expander_key = f"product_exp_{turn_idx}_{idx}"
-   
-    with st.expander(header_text, expanded=False):
-        # Display product details in organized sections
-        col1, col2 = st.columns(2)
-       
-        with col1:
-            st.markdown("### 💰 Price Information")
-            st.markdown(f"**Price:** ₹{price:,.2f}")
-            if 'mrp' in product and product['mrp']:
-                st.markdown(f"**MRP:** ₹{product['mrp']:,.2f}")
-            if 'discount' in product and product['discount']:
-                st.markdown(f"**Discount:** {product['discount']}%")
-           
-            st.markdown("### 📦 Product Details")
-            if brand:
-                st.markdown(f"**Brand:** {brand}")
-            if category:
-                st.markdown(f"**Category:** {category}")
-            if 'color' in product and product['color']:
-                st.markdown(f"**Color:** {product['color']}")
-            if 'size' in product and product['size']:
-                st.markdown(f"**Size:** {product['size']}")
-       
-        with col2:
-            st.markdown("### ℹ️ Additional Information")
-            if 'material' in product and product['material']:
-                st.markdown(f"**Material:** {product['material']}")
-            if 'stock' in product and product['stock'] is not None:
-                stock_status = "✅ In Stock" if product['stock'] > 0 else "❌ Out of Stock"
-                st.markdown(f"**Stock:** {stock_status} ({product['stock']} units)")
-            if 'rating' in product and product['rating']:
-                stars = '⭐' * int(float(product['rating']))
-                st.markdown(f"**Rating:** {stars} ({product['rating']})")
-            if 'reviews' in product and product['reviews']:
-                st.markdown(f"**Reviews:** {product['reviews']}")
-       
-        # Show all other attributes
-        st.markdown("### 📋 All Attributes")
-       
-        # Collect all attributes not already displayed
-        displayed_keys = ['product_name', 'name', 'price', 'selling_price', 'mrp', 'discount',
-                         'brand', 'category', 'color', 'size', 'material', 'stock', 'rating', 'reviews']
-       
-        other_attrs = {k: v for k, v in product.items() if k not in displayed_keys and v is not None and v != ''}
-       
-        if other_attrs:
-            for key, value in other_attrs.items():
-                st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
-        else:
-            st.caption("No additional attributes")
-
-# ================= LOAD BUSINESS DATABASE SCHEMA =================
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+# ================= LOAD SCHEMA =================
+@st.cache_data(ttl=3600)
 def load_business_schema():
-    """Load and cache business database schema"""
+    """Load business schema"""
     connection = get_business_db_connection()
     if connection:
         try:
@@ -1370,36 +1234,31 @@ def load_business_schema():
                 connection.close()
     return {}
 
-# Initialize business schema on app load
 if not st.session_state.business_schema:
     st.session_state.business_schema = load_business_schema()
 
-# ================= MAIN APPLICATION =================
+# ================= MAIN APPLICATION UI =================
 # ================= LOGIN/SIGNUP =================
 if not st.session_state.logged_in:
-    # Center the auth container
     col1, col2, col3 = st.columns([1, 2, 1])
-   
     with col2:
         st.markdown('<div class="auth-container">', unsafe_allow_html=True)
         st.markdown('<div class="auth-header">', unsafe_allow_html=True)
         st.markdown("# 🗄️ SQL Assistant Pro")
-        st.markdown("### Powered by Meta Llama 3.3 via Groq")
+        st.markdown("### Powered by Meta Llama 3.3")
         st.markdown('</div>', unsafe_allow_html=True)
-       
+        
         tab1, tab2 = st.tabs(["🔑 Login", "✨ Sign Up"])
-       
+        
         with tab1:
             st.markdown('<div class="auth-form">', unsafe_allow_html=True)
             with st.form("login_form"):
                 st.markdown("### Welcome Back!")
-                username = st.text_input("Username", placeholder="Enter your username")
-                password = st.text_input("Password", type="password", placeholder="Enter your password")
-               
+                username = st.text_input("Username", placeholder="Enter username")
+                password = st.text_input("Password", type="password", placeholder="Enter password")
                 col_a, col_b = st.columns([1, 1])
                 with col_a:
                     submit = st.form_submit_button("Login", use_container_width=True, type="primary")
-               
                 if submit:
                     if username and password:
                         success, user_id = verify_user(username, password)
@@ -1407,7 +1266,6 @@ if not st.session_state.logged_in:
                             st.session_state.logged_in = True
                             st.session_state.user_id = user_id
                             st.session_state.username = username
-                            # Load user's previous SQLite DBs
                             st.session_state.user_sqlite_dbs = load_user_sqlite_dbs(user_id)
                             st.success("✅ Login successful!")
                             st.rerun()
@@ -1416,19 +1274,17 @@ if not st.session_state.logged_in:
                     else:
                         st.warning("⚠️ Please fill all fields")
             st.markdown('</div>', unsafe_allow_html=True)
-       
+        
         with tab2:
             st.markdown('<div class="auth-form">', unsafe_allow_html=True)
             with st.form("signup_form"):
                 st.markdown("### Create Account")
-                new_username = st.text_input("Username", placeholder="Choose a username")
-                new_password = st.text_input("Password", type="password", placeholder="Choose a password")
-                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password")
-               
+                new_username = st.text_input("Username", placeholder="Choose username")
+                new_password = st.text_input("Password", type="password", placeholder="Choose password")
+                confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm password")
                 col_a, col_b = st.columns([1, 1])
                 with col_a:
                     submit = st.form_submit_button("Sign Up", use_container_width=True, type="primary")
-               
                 if submit:
                     if new_username and new_password and confirm_password:
                         if new_password == confirm_password:
@@ -1436,36 +1292,28 @@ if not st.session_state.logged_in:
                                 success, message = create_user(new_username, new_password)
                                 if success:
                                     st.success(f"✅ {message}")
-                                    st.info("👉 Please login with your credentials")
+                                    st.info("👉 Please login")
                                 else:
                                     st.error(f"❌ {message}")
                             else:
-                                st.error("❌ Password must be at least 6 characters")
+                                st.error("❌ Password must be 6+ characters")
                         else:
-                            st.error("❌ Passwords do not match")
+                            st.error("❌ Passwords don't match")
                     else:
-                        st.warning("⚠️ Please fill all fields")
+                        st.warning("⚠️ Fill all fields")
             st.markdown('</div>', unsafe_allow_html=True)
-       
+        
         st.markdown('</div>', unsafe_allow_html=True)
-       
-        # Feature highlights
         st.markdown("---")
         st.markdown("### ✨ Features")
-        col_feat1, col_feat2 = st.columns(2)
-        with col_feat1:
-            st.markdown("- 🧠 Context Retention")
-            st.markdown("- 🔍 Semantic Search")
-            st.markdown("- ⚡ Smart Queries")
-        with col_feat2:
-            st.markdown("- 📊 Auto Visualization")
-            st.markdown("- 🎯 LLM Intent Analysis")
-            st.markdown("- 💬 Multi-Chat Support")
-   
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            st.markdown("- 🧠 Context Retention\n- 🔍 Semantic Search\n- ⚡ Smart Queries\n- 📊 Dynamic Visualization")
+        with col_f2:
+            st.markdown("- 🎯 Intent Analysis\n- 💬 Multi-Chat\n- 🗄️ Multi-Database\n- 🎨 Adaptive Display")
     st.stop()
 
 # ================= MAIN APP =================
-# Header
 col1, col2, col3 = st.columns([2, 3, 1])
 with col1:
     st.title("🗄️ SQL Assistant Pro")
@@ -1473,7 +1321,6 @@ with col2:
     st.markdown(f"### Welcome, **{st.session_state.username}**! 👋")
 with col3:
     if st.button("🚪 Logout", type="secondary"):
-        # Close MySQL connection if open
         if st.session_state.custom_mysql_connection:
             try:
                 if st.session_state.custom_mysql_connection.is_connected():
@@ -1496,29 +1343,25 @@ st.divider()
 # ================= SIDEBAR =================
 with st.sidebar:
     st.header("⚙️ Control Panel")
-   
-    # Database Selection
     st.subheader("🗄️ Database Source")
     db_modes = ["System DB (MySQL)", "Custom Persistent SQLite", "Custom MySQL Host"]
     selected_mode = st.radio(
         "Select Database Mode",
         db_modes,
-        index=0 if st.session_state.db_mode == "system" else 1 if st.session_state.db_mode == "custom_sqlite" else 2,
-        format_func=lambda x: x
+        index=0 if st.session_state.db_mode == "system" else 1 if st.session_state.db_mode == "custom_sqlite" else 2
     )
-   
-    # Map to internal mode
+    
     if selected_mode == "System DB (MySQL)":
         st.session_state.db_mode = "system"
     elif selected_mode == "Custom Persistent SQLite":
         st.session_state.db_mode = "custom_sqlite"
-    elif selected_mode == "Custom MySQL Host":
+    else:
         st.session_state.db_mode = "custom_mysql"
-   
+    
     st.markdown("---")
-   
+    
     if st.session_state.db_mode == "system":
-        st.success("✅ Using pre-configured System MySQL Database")
+        st.success("✅ Using System MySQL Database")
     elif st.session_state.db_mode == "custom_sqlite":
         st.markdown('<div class="custom-db-form">', unsafe_allow_html=True)
         st.info("💡 Your Previous SQLite Databases:")
@@ -1527,7 +1370,6 @@ with st.sidebar:
             selected_db = st.selectbox(
                 "Select Existing DB",
                 options=[os.path.basename(path) for path in st.session_state.user_sqlite_dbs],
-                format_func=lambda x: x,
                 index=0,
                 key="select_existing_db"
             )
@@ -1541,30 +1383,28 @@ with st.sidebar:
                 st.success(f"✅ Loaded {selected_db}")
                 st.rerun()
         else:
-            st.info("No previous databases. Upload a new one.")
+            st.info("No previous databases.")
         
         st.markdown("### 📤 Upload New Database")
         uploaded_db_file = st.file_uploader(
-            "Upload CSV/Excel for New Persistent SQLite",
+            "Upload CSV/Excel",
             type=['csv', 'xlsx', 'xls'],
-            key="sqlite_uploader",
-            help="Upload to create persistent SQLite file"
+            key="sqlite_uploader"
         )
-       
-        if uploaded_db_file and st.button("📤 Create New Persistent SQLite DB", use_container_width=True):
-            with st.spinner("Processing and saving to disk..."):
+        
+        if uploaded_db_file and st.button("📤 Create Persistent SQLite DB", use_container_width=True):
+            with st.spinner("Processing..."):
                 file_bytes = uploaded_db_file.read()
                 success, table_name, message = create_persistent_sqlite_from_file(
                     file_bytes,
                     uploaded_db_file.name,
                     st.session_state.user_id
                 )
-               
                 if success:
                     st.success(f"✅ {message}")
-                    # Reload user's DB list
                     st.session_state.user_sqlite_dbs = load_user_sqlite_dbs(st.session_state.user_id)
-                    st.session_state.active_custom_sqlite_path = os.path.join(PERSISTENT_DB_DIR, f"{st.session_state.user_id}_{uploaded_db_file.name.split('.')[0].replace(' ', '_').replace('-', '_').lower()}.db")
+                    safe_filename = uploaded_db_file.name.split('.')[0].replace(' ', '_').replace('-', '_').lower()
+                    st.session_state.active_custom_sqlite_path = os.path.join(PERSISTENT_DB_DIR, f"{st.session_state.user_id}_{safe_filename}.db")
                     conn = sqlite3.connect(st.session_state.active_custom_sqlite_path)
                     schema = get_database_schema(conn)
                     st.session_state.custom_schema = schema
@@ -1573,36 +1413,29 @@ with st.sidebar:
                 else:
                     st.error(f"❌ {message}")
         st.markdown('</div>', unsafe_allow_html=True)
-    elif st.session_state.db_mode == "custom_mysql":
+    else:  # custom_mysql
         st.markdown('<div class="custom-db-form">', unsafe_allow_html=True)
         st.info("🔌 Connect to Custom MySQL Host")
-        
-        # MySQL Credential Input Form
         with st.form("mysql_creds_form"):
             st.markdown("### Enter Connection Details")
             col1, col2 = st.columns(2)
             with col1:
-                host = st.text_input("Host", value=st.session_state.custom_mysql_params.get("host", ""), placeholder="e.g., localhost")
+                host = st.text_input("Host", value=st.session_state.custom_mysql_params.get("host", ""), placeholder="localhost")
                 port = st.number_input("Port", value=st.session_state.custom_mysql_params.get("port", 3306), min_value=1, max_value=65535)
-                database = st.text_input("Database", value=st.session_state.custom_mysql_params.get("database", ""), placeholder="e.g., mydb")
+                database = st.text_input("Database", value=st.session_state.custom_mysql_params.get("database", ""))
             with col2:
-                user = st.text_input("User", value=st.session_state.custom_mysql_params.get("user", ""), placeholder="e.g., root")
-                password = st.text_input("Password", value=st.session_state.custom_mysql_params.get("password", ""), type="password", placeholder="Enter password")
+                user = st.text_input("User", value=st.session_state.custom_mysql_params.get("user", ""), placeholder="root")
+                password = st.text_input("Password", value=st.session_state.custom_mysql_params.get("password", ""), type="password")
                 ssl_disabled = st.checkbox("Disable SSL", value=st.session_state.custom_mysql_params.get("ssl_disabled", True))
-                ssl_ca = st.text_input("SSL CA Path (if enabled)", value=st.session_state.custom_mysql_params.get("ssl_ca", ""), placeholder="Path to CA cert", disabled=ssl_disabled)
+                ssl_ca = st.text_input("SSL CA Path", value=st.session_state.custom_mysql_params.get("ssl_ca", ""), disabled=ssl_disabled)
             
-            connect_btn = st.form_submit_button("🔄 Connect to MySQL", use_container_width=True)
-            
+            connect_btn = st.form_submit_button("🔄 Connect", use_container_width=True)
             if connect_btn:
                 if host and port and database and user and password:
                     params = {
-                        "host": host,
-                        "port": port,
-                        "database": database,
-                        "user": user,
-                        "password": password,
-                        "ssl_disabled": ssl_disabled,
-                        "ssl_ca": ssl_ca if not ssl_disabled else ""
+                        "host": host, "port": port, "database": database,
+                        "user": user, "password": password,
+                        "ssl_disabled": ssl_disabled, "ssl_ca": ssl_ca if not ssl_disabled else ""
                     }
                     st.session_state.custom_mysql_params = params
                     with st.spinner("Connecting..."):
@@ -1611,49 +1444,34 @@ with st.sidebar:
                             st.session_state.custom_mysql_connection = conn
                             schema = get_database_schema(conn)
                             st.session_state.custom_schema = schema
-                            st.success("✅ Connected to Custom MySQL!")
+                            st.success("✅ Connected!")
                             st.rerun()
                         else:
-                            st.error("❌ Connection failed. Check details.")
+                            st.error("❌ Connection failed")
                 else:
-                    st.warning("⚠️ Please fill all required fields")
+                    st.warning("⚠️ Fill all fields")
         
-        # Optional: Upload file to load into custom MySQL
         if st.session_state.custom_mysql_connection:
-            st.info("💡 Optionally load CSV/Excel into your Custom MySQL DB")
-            uploaded_file = st.file_uploader(
-                "Upload File to Custom MySQL",
-                type=['csv', 'xlsx', 'xls'],
-                key="mysql_uploader"
-            )
-           
-            if uploaded_file and st.button("📤 Load into Custom MySQL", use_container_width=True):
-                with st.spinner("Loading into MySQL..."):
+            st.info("💡 Optionally load CSV/Excel")
+            uploaded_file = st.file_uploader("Upload File", type=['csv', 'xlsx', 'xls'], key="mysql_uploader")
+            if uploaded_file and st.button("📤 Load into MySQL", use_container_width=True):
+                with st.spinner("Loading..."):
                     file_bytes = uploaded_file.read()
                     success, table_name, message = create_temp_database_from_mysql_file(
-                        file_bytes,
-                        uploaded_file.name,
-                        st.session_state.custom_mysql_connection
+                        file_bytes, uploaded_file.name, st.session_state.custom_mysql_connection
                     )
-                   
                     if success:
                         st.success(f"✅ {message}")
-                        # Reload schema
                         schema = get_database_schema(st.session_state.custom_mysql_connection)
                         st.session_state.custom_schema = schema
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
-        else:
-            st.warning("⚠️ Enter credentials and connect first to use uploads")
         st.markdown('</div>', unsafe_allow_html=True)
-   
+    
     st.divider()
-   
-    # Database Schema Viewer
     st.subheader("📊 Database Schema")
-   
-    # Show schema based on mode
+    
     schema_to_show = {}
     db_name = ""
     if st.session_state.db_mode == "system":
@@ -1666,16 +1484,14 @@ with st.sidebar:
         conn = sqlite3.connect(st.session_state.active_custom_sqlite_path)
         schema_to_show = get_database_schema(conn)
         conn.close()
-        db_name = f"Active SQLite: {os.path.basename(st.session_state.active_custom_sqlite_path)}"
+        db_name = f"SQLite: {os.path.basename(st.session_state.active_custom_sqlite_path)}"
     elif st.session_state.db_mode == "custom_mysql" and st.session_state.custom_mysql_connection:
         schema_to_show = st.session_state.custom_schema
-        db_name = f"Custom MySQL: {st.session_state.custom_mysql_params.get('database', 'Connected')}"
-   
+        db_name = f"MySQL: {st.session_state.custom_mysql_params.get('database', 'Connected')}"
+    
     if schema_to_show:
         st.info(f"🗄️ **Database:** {db_name}")
         st.markdown("---")
-       
-        # Display each table with expandable columns
         for table_name, table_info in schema_to_show.items():
             with st.expander(f"📁 **{table_name}**", expanded=False):
                 st.caption(f"**Columns ({len(table_info['columns'])}):**")
@@ -1685,49 +1501,33 @@ with st.sidebar:
                         key_icon = "🔑 "
                     elif col.get('key') == 'MUL':
                         key_icon = "🔗 "
-                   
-                    col_type = col['type']
-                    if '(' in col_type:
-                        col_type = col_type.split('(')[0]
-                   
+                    col_type = col['type'].split('(')[0] if '(' in col['type'] else col['type']
                     st.markdown(f"{key_icon}**{col['name']}** `{col_type}`")
-               
                 if table_info.get('relationships'):
                     st.caption("**🔗 Relationships:**")
                     for rel in table_info['relationships']:
                         st.markdown(f"→ {rel['column']} ➜ {rel['references_table']}.{rel['references_column']}")
-               
-                if table_info.get('sample_data'):
-                    st.caption(f"📝 *Sample data available*")
     else:
-        st.warning("No schema available. Configure a database first.")
-   
+        st.warning("No schema available")
+    
     st.divider()
-   
-    # Chat History
     st.subheader("💬 Chat History")
-   
     if st.button("➕ New Chat", use_container_width=True, type="primary"):
         new_chat_id = create_new_chat(st.session_state.user_id, None, None)
         if new_chat_id:
             st.session_state.current_chat_id = new_chat_id
             st.rerun()
-   
+    
     st.markdown("---")
-   
     user_chats = get_user_chats(st.session_state.user_id)
-   
     if user_chats:
         for chat in user_chats:
             col1, col2, col3 = st.columns([6, 2, 2])
-           
             with col1:
                 display_title = chat['title']
                 if len(display_title) > 25:
                     display_title = display_title[:22] + "..."
-               
                 is_active = chat['chat_id'] == st.session_state.current_chat_id
-               
                 if st.button(
                     f"{'📌 ' if is_active else '💬 '}{display_title}",
                     key=f"chat_{chat['chat_id']}",
@@ -1736,62 +1536,51 @@ with st.sidebar:
                 ):
                     st.session_state.current_chat_id = chat['chat_id']
                     st.rerun()
-           
             with col2:
                 if st.button("✏️", key=f"rename_{chat['chat_id']}", help="Rename"):
                     st.session_state.show_rename_dialog = True
                     st.session_state.rename_chat_id = chat['chat_id']
                     st.rerun()
-           
             with col3:
                 if st.button("🗑️", key=f"del_{chat['chat_id']}", help="Delete"):
                     st.session_state.show_delete_dialog = True
                     st.session_state.delete_chat_id = chat['chat_id']
                     st.rerun()
     else:
-        st.info("No chats yet. Start one! 🚀")
-   
+        st.info("No chats yet 🚀")
+    
     st.divider()
-    st.caption("💡 **Powered by Meta Llama 3.3:**")
-    st.caption("• 🧠 Context Retention (5 recent + summary)")
-    st.caption("• 🔍 Semantic Similar Questions")
-    st.caption("• 🎯 LLM-Based Intent Analysis")
-    st.caption("• ⚡ Smart Multi-Table Queries")
-    st.caption("• 🗄️ MySQL & Persistent SQLite Support")
-   
-    # Show available tables at the bottom
+    st.caption("💡 **Powered by Llama 3.3:**")
+    st.caption("• 🧠 Context Retention")
+    st.caption("• 🔍 Semantic Search")
+    st.caption("• 🎯 Intent Analysis")
+    st.caption("• 📊 Dynamic Visualization")
+    
     if schema_to_show:
         st.divider()
         st.caption("📋 **Available Tables:**")
         for table_name in schema_to_show.keys():
             st.caption(f"• {table_name}")
 
-# ================= DELETE CONFIRMATION DIALOG =================
+# ================= DELETE DIALOG =================
 if st.session_state.show_delete_dialog and st.session_state.delete_chat_id:
     @st.dialog("⚠️ Confirm Delete")
     def delete_dialog():
         user_chats = get_user_chats(st.session_state.user_id)
         chat_to_delete = next((c for c in user_chats if c['chat_id'] == st.session_state.delete_chat_id), None)
-       
         if chat_to_delete:
             st.markdown('<div class="delete-warning">', unsafe_allow_html=True)
-            st.warning("⚠️ **Warning: This action cannot be undone!**")
+            st.warning("⚠️ **This action cannot be undone!**")
             st.markdown('</div>', unsafe_allow_html=True)
-           
-            st.markdown(f"### Are you sure you want to delete this chat?")
+            st.markdown(f"### Delete this chat?")
             st.info(f"**Chat:** {chat_to_delete['title']}")
-           
             col1, col2 = st.columns(2)
-           
             with col1:
                 if st.button("🗑️ Yes, Delete", use_container_width=True, type="primary"):
-                    # If deleting current chat, switch to another
                     if st.session_state.delete_chat_id == st.session_state.current_chat_id:
                         other_chats = [c for c in user_chats if c['chat_id'] != st.session_state.delete_chat_id]
                         st.session_state.current_chat_id = other_chats[0]['chat_id'] if other_chats else None
-                   
                     success, message = delete_chat(st.session_state.delete_chat_id, st.session_state.user_id)
-                   
                     if success:
                         st.success(message)
                         st.session_state.show_delete_dialog = False
@@ -1799,13 +1588,11 @@ if st.session_state.show_delete_dialog and st.session_state.delete_chat_id:
                         st.rerun()
                     else:
                         st.error(message)
-           
             with col2:
                 if st.button("❌ Cancel", use_container_width=True):
                     st.session_state.show_delete_dialog = False
                     st.session_state.delete_chat_id = None
                     st.rerun()
-   
     delete_dialog()
 
 # ================= RENAME DIALOG =================
@@ -1814,26 +1601,13 @@ if st.session_state.show_rename_dialog and st.session_state.rename_chat_id:
     def rename_dialog():
         user_chats = get_user_chats(st.session_state.user_id)
         current_chat = next((c for c in user_chats if c['chat_id'] == st.session_state.rename_chat_id), None)
-       
         if current_chat:
-            new_title = st.text_input(
-                "New title:",
-                value=current_chat['title'],
-                max_chars=255,
-                key="rename_input"
-            )
-           
+            new_title = st.text_input("New title:", value=current_chat['title'], max_chars=255, key="rename_input")
             col1, col2 = st.columns(2)
-           
             with col1:
                 if st.button("💾 Save", use_container_width=True, type="primary"):
                     if new_title and new_title.strip():
-                        success, message = rename_chat(
-                            st.session_state.rename_chat_id,
-                            st.session_state.user_id,
-                            new_title
-                        )
-                       
+                        success, message = rename_chat(st.session_state.rename_chat_id, st.session_state.user_id, new_title)
                         if success:
                             st.success(message)
                             st.session_state.show_rename_dialog = False
@@ -1843,134 +1617,90 @@ if st.session_state.show_rename_dialog and st.session_state.rename_chat_id:
                             st.error(message)
                     else:
                         st.error("Title cannot be empty")
-           
             with col2:
                 if st.button("❌ Cancel", use_container_width=True):
                     st.session_state.show_rename_dialog = False
                     st.session_state.rename_chat_id = None
                     st.rerun()
-   
     rename_dialog()
 
 # ================= MAIN CHAT INTERFACE =================
-st.info("🤖 **Powered by Meta Llama 3.3 70B** - Lightning-fast context-aware SQL generation with LLM-based intent analysis!")
+st.info("🤖 **Powered by Meta Llama 3.3 70B** - Context-aware SQL generation with dynamic visualization!")
+
 if not st.session_state.current_chat_id:
-    # Welcome screen
     st.markdown("## 👋 Welcome to SQL Assistant Pro!")
-    st.markdown("### Enhanced with Meta Llama 3.3 via Groq API")
-   
+    st.markdown("### Enhanced with Meta Llama 3.3")
     col1, col2 = st.columns(2)
-   
     with col1:
         st.markdown("#### 🧠 Context Features")
-        st.markdown("- ✅ **Retains Last 5 Messages** - Recent context")
-        st.markdown("- 📝 **Summarizes Older Chats** - Long-term memory")
-        st.markdown("- 🔍 **Semantic Search** - Finds similar Q&As")
-        st.markdown("- 💡 **Smart Context Window** - Optimized tokens")
-   
+        st.markdown("- ✅ Last 5 Messages\n- 📝 Summarizes Older Chats\n- 🔍 Semantic Search\n- 💡 Smart Context")
     with col2:
         st.markdown("#### ⚡ Query Intelligence")
-        st.markdown("- 🎯 **LLM Intent Analysis** - Smart table detection")
-        st.markdown("- 🔗 **JOIN When Needed** - Performance first")
-        st.markdown("- 📊 **Multi-Table Analysis** - Complex queries")
-        st.markdown("- 🚀 **Single-Table Preference** - Speed optimized")
-   
+        st.markdown("- 🎯 Intent Analysis\n- 🔗 Smart JOINs\n- 📊 Dynamic Charts\n- 🚀 Speed Optimized")
     st.markdown("---")
     st.markdown("### 💡 Example Questions:")
-   
-    example_col1, example_col2 = st.columns(2)
-   
-    with example_col1:
-        st.markdown("**Single-Table Queries:**")
-        st.markdown("- 'Show me red sneakers for women'")
-        st.markdown("- 'Find all Nike products'")
-        st.markdown("- 'What shoes cost under ₹2000?'")
-        st.markdown("- 'List athletic footwear'")
-   
-    with example_col2:
-        st.markdown("**Multi-Table Queries:**")
-        st.markdown("- 'What are our best-selling products?'")
-        st.markdown("- 'Total revenue by product category'")
-        st.markdown("- 'Which customers bought Nike shoes?'")
-        st.markdown("- 'Sales performance analysis'")
+    ex_col1, ex_col2 = st.columns(2)
+    with ex_col1:
+        st.markdown("**Single-Table:**\n- 'Show red sneakers'\n- 'Find Nike products'\n- 'Shoes under ₹2000'")
+    with ex_col2:
+        st.markdown("**Multi-Table:**\n- 'Best-selling products'\n- 'Revenue by category'\n- 'Sales performance'")
 else:
-    # Display chat history
     chat_history = get_chat_history(st.session_state.current_chat_id, st.session_state.user_id)
-   
+    
     for turn_idx, turn in enumerate(chat_history):
-        # User message
         with st.chat_message("user"):
             st.write(turn["question"])
-            st.markdown(create_copy_button(turn["question"], "📋 Copy Question"), unsafe_allow_html=True)
-       
-        # Assistant message
+            st.markdown(create_copy_button(turn["question"], "📋 Copy"), unsafe_allow_html=True)
+        
         with st.chat_message("assistant"):
             if turn.get("response"):
                 st.write(turn["response"])
-           
-            # Display saved results if available
+            
+            # UPDATED: Dynamic data display
             if turn.get("result_df") is not None:
                 df = turn["result_df"]
-               
                 if not df.empty:
-                    row_count = len(df)
-                    if is_product_data(df) and row_count <= 20:  # Stricter condition and limit
-                        # Show as product dropdowns
-                        st.markdown(f"### 🛍️ Products Found ({row_count} items)")
-                        st.caption("*Click on any product to expand and view details*")
-                       
+                    data_analysis = analyze_dataframe_structure(df)
+                    
+                    if data_analysis['display_method'] == 'card' and len(df) <= 50:
+                        st.markdown(f"### 📋 Results Found ({len(df)} items)")
+                        st.caption("*Click to expand*")
                         for idx, row in df.iterrows():
-                            display_product_dropdown(row.to_dict(), idx, turn_idx)
+                            display_data_card(row.to_dict(), idx, turn_idx, data_analysis)
                     else:
-                        # Generic table display
-                        st.markdown(f"### 📊 Results ({row_count} rows)")
-                        with st.expander(f"View Data", expanded=False):
-                            st.dataframe(df, use_container_width=True, height=min(400, row_count * 30 + 50))  # Dynamic height
-                            st.markdown(
-                                create_download_link(
-                                    df,
-                                    f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                                ),
-                                unsafe_allow_html=True
-                            )
-           
+                        with st.expander(f"📊 View Results ({len(df)} items)", expanded=False):
+                            st.dataframe(df, use_container_width=True, height=400)
+                            st.markdown(create_download_link(df, f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), unsafe_allow_html=True)
+            
             if turn.get("query_generated"):
-                with st.expander("🔍 View SQL Query & Details"):
+                with st.expander("🔍 View SQL Query"):
                     st.code(turn["query_generated"], language="sql")
-                    st.markdown(create_copy_button(turn["query_generated"], "📋 Copy Query"), unsafe_allow_html=True)
-                   
-                    # Show query type
+                    st.markdown(create_copy_button(turn["query_generated"], "📋 Copy"), unsafe_allow_html=True)
                     query_lower = turn["query_generated"].lower()
                     if "join" in query_lower:
-                        st.info("🔗 Multi-table query (JOIN used)")
+                        st.info("🔗 Multi-table query")
                     else:
-                        st.success("⚡ Single-table query (Optimized)")
-   
-    # Chat input
+                        st.success("⚡ Single-table query")
+    
     user_question = st.chat_input("💬 Ask about your data...")
-   
+    
     if user_question:
-        # Update chat title if first message
         if len(chat_history) == 0:
             new_title = generate_smart_chat_title(user_question)
             rename_chat(st.session_state.current_chat_id, st.session_state.user_id, new_title)
-       
-        # Display user message
+        
         with st.chat_message("user"):
             st.write(user_question)
-            st.markdown(create_copy_button(user_question, "📋 Copy Question"), unsafe_allow_html=True)
-       
-        # Generate response
+            st.markdown(create_copy_button(user_question, "📋 Copy"), unsafe_allow_html=True)
+        
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Analyzing with Llama 3.3..."):
-                # Build optimized context
+            with st.spinner("🤔 Analyzing..."):
                 context, context_stats = build_optimized_context(chat_history, user_question)
-               
-                # Determine active connection and schema based on mode
+                
                 active_conn = None
                 active_schema = {}
                 is_sqlite = False
-               
+                
                 if st.session_state.db_mode == "system":
                     active_conn = get_business_db_connection()
                     active_schema = st.session_state.business_schema
@@ -1983,235 +1713,118 @@ else:
                     active_conn = st.session_state.custom_mysql_connection
                     active_schema = st.session_state.custom_schema
                     is_sqlite = False
-               
+                
                 if not active_conn:
-                    response = "⚠️ No database connected. Please select and configure a database mode in the sidebar."
+                    response = "⚠️ No database connected"
                     st.error(response)
-                    save_chat_turn(
-                        st.session_state.current_chat_id,
-                        st.session_state.user_id,
-                        user_question,
-                        None,
-                        response,
-                        None
-                    )
+                    save_chat_turn(st.session_state.current_chat_id, st.session_state.user_id, user_question, None, response, None)
                 else:
                     try:
-                        # Use LLM to analyze query intent
-                        with st.spinner("🧠 Analyzing query intent with LLM..."):
-                            intent_analysis = analyze_query_intent_with_llm(
-                                user_question,
-                                active_schema
-                            )
-                       
-                        # Show intent analysis
-                        st.info(f"🎯 Intent: {intent_analysis['intent_type']} | Tables: {', '.join(intent_analysis['tables_needed'])}")
-                       
-                        # Format schema with smart multi-table context
-                        schema_text = format_schema_for_llm(
-                            active_schema,
-                            tables_to_include=intent_analysis['tables_needed']
-                        )
-                       
-                        # Generate query with intent analysis and database type
-                        query_result = generate_sql_query(
-                            user_question,
-                            schema_text,
-                            context,
-                            intent_analysis,
-                            is_sqlite=is_sqlite
-                        )
-                       
+                        with st.spinner("🧠 Analyzing intent..."):
+                            intent_analysis = analyze_query_intent_with_llm(user_question, active_schema)
+                        st.info(f"🎯 {intent_analysis['intent_type']} | Tables: {', '.join(intent_analysis['tables_needed'])}")
+                        
+                        schema_text = format_schema_for_llm(active_schema, tables_to_include=intent_analysis['tables_needed'])
+                        query_result = generate_sql_query(user_question, schema_text, context, intent_analysis, is_sqlite=is_sqlite)
+                        
                         if not query_result["success"]:
-                            response = f"❌ Could not generate query: {query_result.get('error', 'Unknown')}"
+                            response = f"❌ Query generation failed: {query_result.get('error', 'Unknown')}"
                             st.error(response)
-                           
                             if query_result.get("query"):
                                 st.code(query_result["query"], language="sql")
-                           
-                            save_chat_turn(
-                                st.session_state.current_chat_id,
-                                st.session_state.user_id,
-                                user_question,
-                                query_result.get("query"),
-                                response,
-                                None
-                            )
+                            save_chat_turn(st.session_state.current_chat_id, st.session_state.user_id, user_question, query_result.get("query"), response, None)
                         else:
                             query = query_result["query"]
                             result = execute_query(active_conn, query)
-                           
+                            
                             if not result["success"]:
                                 response = f"❌ Query failed: {result.get('error', 'Unknown')}"
                                 st.error(response)
-                               
-                                # Show available tables on error
-                                st.warning("**Available tables in database:**")
+                                st.warning("**Available tables:**")
                                 if active_schema:
                                     for table_name in active_schema.keys():
                                         st.write(f"• {table_name}")
-                               
                                 with st.expander("🔍 View Failed Query"):
                                     st.code(query, language="sql")
-                                    st.markdown(create_copy_button(query, "📋 Copy Query"), unsafe_allow_html=True)
+                                    st.markdown(create_copy_button(query, "📋 Copy"), unsafe_allow_html=True)
+                                save_chat_turn(st.session_state.current_chat_id, st.session_state.user_id, user_question, query, response, None)
                             else:
-                                # Generate response with visualization
-                                summary, df, visualization = generate_db_response_with_presentation(
-                                    user_question,
-                                    query,
-                                    result,
-                                    context
-                                )
-                               
-                                # Display summary
+                                summary, df, visualization, data_analysis = generate_db_response_with_presentation(user_question, query, result, context)
                                 st.write(summary)
-                               
-                                # Display visualization if available
+                                
                                 if visualization:
                                     st.plotly_chart(visualization, use_container_width=True)
-                               
-                                # Display results
+                                
+                                # UPDATED: Dynamic display
                                 if df is not None and not df.empty:
-                                    row_count = len(df)
-                                    if is_product_data(df) and row_count <= 20:
-                                        # Show as product dropdowns
-                                        st.markdown(f"### 🛍️ Products Found ({row_count} items)")
-                                        st.caption("*Click on any product to expand and view details*")
-                                       
-                                        # Use current turn count as turn_idx
+                                    if data_analysis['display_method'] == 'card' and len(df) <= 50:
+                                        st.markdown(f"### 📋 Results Found ({len(df)} items)")
+                                        st.caption("*Click to expand*")
                                         current_turn_idx = len(chat_history)
                                         for idx, row in df.iterrows():
-                                            display_product_dropdown(row.to_dict(), idx, current_turn_idx)
+                                            display_data_card(row.to_dict(), idx, current_turn_idx, data_analysis)
                                     else:
-                                        # Generic display: Table for larger sets, cards for small
-                                        st.markdown(f"### 📊 Results ({row_count} rows)")
-                                        if row_count <= 10:
-                                            # Show as expandable cards for small datasets
-                                            st.caption("Click rows to expand details")
-                                            for idx, row in df.iterrows():
-                                                display_generic_row(row.to_dict(), idx)
-                                        else:
-                                            # Table for larger sets
-                                            with st.expander(f"View Full Data", expanded=True):
-                                                st.dataframe(df, use_container_width=True, height=min(400, row_count * 30 + 50))
-                                                st.markdown(
-                                                    create_download_link(
-                                                        df,
-                                                        f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                                                    ),
-                                                    unsafe_allow_html=True
-                                                )
-                               
-                                # Query details expander
-                                with st.expander("🔍 View Query & Optimization Details"):
-                                    # Query type indicator
+                                        with st.expander(f"📊 View Results ({len(df)} items)", expanded=True):
+                                            st.dataframe(df, use_container_width=True, height=400)
+                                            st.markdown(create_download_link(df, f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), unsafe_allow_html=True)
+                                
+                                with st.expander("🔍 Query Details"):
                                     query_lower = query.lower()
                                     if "join" in query_lower:
-                                        st.warning("🔗 **Multi-Table Query** - JOIN was necessary for this question")
+                                        st.warning("🔗 Multi-table query")
                                     else:
-                                        st.success("⚡ **Single-Table Query** - Optimized for speed!")
-                                   
-                                    st.subheader("📝 Generated SQL Query")
-                                    db_type = "SQLite" if is_sqlite else "MySQL"
-                                    st.caption(f"Database Type: {db_type}")
+                                        st.success("⚡ Single-table query")
+                                    st.subheader("📝 SQL Query")
+                                    st.caption(f"Database: {'SQLite' if is_sqlite else 'MySQL'}")
                                     st.code(query, language="sql")
-                                    st.markdown(create_copy_button(query, "📋 Copy Query"), unsafe_allow_html=True)
-                                   
-                                    st.subheader("🎯 Query Intent Analysis (LLM-Based)")
+                                    st.markdown(create_copy_button(query, "📋 Copy"), unsafe_allow_html=True)
+                                    st.subheader("🎯 Intent Analysis")
                                     col1, col2 = st.columns(2)
-                                   
                                     with col1:
-                                        st.metric("Query Type", intent_analysis['intent_type'])
-                                        st.metric("Requires JOIN", "Yes" if intent_analysis['requires_join'] else "No")
-                                   
+                                        st.metric("Type", intent_analysis['intent_type'])
+                                        st.metric("JOIN", "Yes" if intent_analysis['requires_join'] else "No")
                                     with col2:
-                                        st.metric("Tables Used", len(intent_analysis['tables_needed']))
+                                        st.metric("Tables", len(intent_analysis['tables_needed']))
                                         st.write("**Reasoning:**", intent_analysis['reasoning'])
-                                   
-                                    st.subheader("📊 Context Optimization")
+                                    st.subheader("📊 Context Stats")
                                     col1, col2, col3, col4 = st.columns(4)
-                                   
                                     with col1:
-                                        st.metric("Total Messages", context_stats['total_messages'])
+                                        st.metric("Total", context_stats['total_messages'])
                                     with col2:
                                         st.metric("Recent", context_stats['recent_count'])
                                     with col3:
                                         st.metric("Summarized", context_stats['summarized_count'])
                                     with col4:
                                         st.metric("Semantic", context_stats['semantic_count'])
-                                   
-                                    # Debug section
-                                    if query_result.get("debug"):
-                                        with st.expander("🐛 DEBUG: Schema & Prompts Sent to LLM", expanded=False):
-                                            debug_info = query_result["debug"]
-                                           
-                                            st.subheader("📊 Full Schema Sent to LLM")
-                                            st.text_area(
-                                                "Schema",
-                                                debug_info.get("full_schema", "Not available"),
-                                                height=300,
-                                                key=f"schema_{datetime.now().timestamp()}"
-                                            )
-                                           
-                                            st.subheader("🤖 System Prompt Sent to LLM")
-                                            st.text_area(
-                                                "System Prompt",
-                                                debug_info.get("system_prompt", "Not available"),
-                                                height=400,
-                                                key=f"sys_prompt_{datetime.now().timestamp()}"
-                                            )
-                                           
-                                            st.subheader("👤 User Prompt Sent to LLM")
-                                            st.text_area(
-                                                "User Prompt",
-                                                debug_info.get("user_prompt", "Not available"),
-                                                height=200,
-                                                key=f"user_prompt_{datetime.now().timestamp()}"
-                                            )
-                               
+                                
                                 response = summary
-                           
-                            # Save with result DataFrame
-                            save_chat_turn(
-                                st.session_state.current_chat_id,
-                                st.session_state.user_id,
-                                user_question,
-                                query,
-                                response,
-                                df if df is not None and not df.empty else None
-                            )
-                   
+                                save_chat_turn(st.session_state.current_chat_id, st.session_state.user_id, user_question, query, response, df if df is not None and not df.empty else None)
+                    
                     except Exception as e:
-                        response = f"❌ Unexpected error: {str(e)}"
+                        response = f"❌ Error: {str(e)}"
                         st.error(response)
                         st.exception(e)
-                        save_chat_turn(
-                            st.session_state.current_chat_id,
-                            st.session_state.user_id,
-                            user_question,
-                            None,
-                            response,
-                            None
-                        )
-                   
+                        save_chat_turn(st.session_state.current_chat_id, st.session_state.user_id, user_question, None, response, None)
+                    
                     finally:
-                        # Close connection if it's not stored in session (SQLite closes automatically on context exit, but explicit for MySQL)
                         if st.session_state.db_mode != "custom_mysql" and active_conn:
                             try:
                                 if not is_sqlite and active_conn.is_connected():
                                     active_conn.close()
                             except:
                                 pass
+        st.rerun()
+
 # ================= FOOTER =================
 st.divider()
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.caption("🤖 Powered by Meta Llama 3.3 70B via Groq")
+    st.caption("🤖 Powered by Meta Llama 3.3 70B")
 with col2:
     db_status = {
         "system": "System DB (MySQL)",
-        "custom_sqlite": "Custom Persistent SQLite",
-        "custom_mysql": "Custom MySQL Host"
+        "custom_sqlite": "Custom SQLite",
+        "custom_mysql": "Custom MySQL"
     }.get(st.session_state.db_mode, "Unknown")
     st.caption(f"🗄️ {db_status}")
 with col3:

@@ -214,3 +214,4 @@ __marimo__/
 # SSL Certs (sensitive)
 certs/
 *.pem
+custom_dbs/

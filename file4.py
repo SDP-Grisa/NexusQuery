@@ -11,9 +11,6 @@ Features:
 8. NEW: Custom MySQL Database Connection Support
 9. NEW: User-specific previous SQLite DB listing on login
 10. NEW: UI-based credential input for Custom MySQL
-11. FIXED: Improved Visualization Logic for Better Data Handling
-12. FIXED: Generic Data Display (No Product Assumption)
-13. FIXED: Dynamic Sample Data in Responses
 DATABASE MIGRATION REQUIRED:
 If you're updating from a previous version, run this SQL command on your auth database:
 ALTER TABLE chat_history ADD COLUMN result_data LONGTEXT AFTER response;
@@ -108,15 +105,6 @@ st.markdown("""
         border-radius: 5px;
         margin: 0.25rem 0;
     }
-
-    /* Generic Data Row Display */
-    .data-row-card {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid #667eea;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -180,24 +168,6 @@ def load_user_sqlite_dbs(user_id: int) -> List[str]:
     return db_files
 
 # ================= DATABASE CONNECTION FUNCTIONS =================
-
-def get_temp_ssl_ca(ca_b64_secret: str) -> str:
-    """Decode base64 SSL CA and write to temp file."""
-    if not ca_b64_secret:
-        return ""
-    try:
-        cert_bytes = base64.b64decode(ca_b64_secret)
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pem', delete=False) as temp_file:
-            temp_file.write(cert_bytes)
-            temp_path = temp_file.name
-        return temp_path  # Path to temp cert file
-    except Exception as e:
-        st.error(f"Failed to decode SSL cert: {e}")
-        return ""
-
-ssl_ca_b64 = st.secrets["database"].get("ssl_ca_b64", "")
-ssl_ca_path = get_temp_ssl_ca(ssl_ca_b64)
-
 def get_auth_db_connection():
     """Connect to authentication database"""
     try:
@@ -206,8 +176,7 @@ def get_auth_db_connection():
             ssl_config = {
                 'ssl_disabled': st.secrets["auth_database"].get("ssl_disabled", False),
                 'ssl_verify_cert': not st.secrets["auth_database"].get("ssl_disabled", False),
-                # 'ssl_ca': st.secrets["auth_database"].get("ssl_ca", ""),
-                'ssl_ca': ssl_ca_path,
+                'ssl_ca': st.secrets["auth_database"].get("ssl_ca", ""),
                 'ssl_verify_identity': not st.secrets["auth_database"].get("ssl_disabled", False),
             }
             connection = mysql.connector.connect(
@@ -244,8 +213,7 @@ def get_business_db_connection():
             ssl_config = {
                 'ssl_disabled': st.secrets["database"].get("ssl_disabled", False),
                 'ssl_verify_cert': not st.secrets["database"].get("ssl_disabled", False),
-                # 'ssl_ca': st.secrets["database"].get("ssl_ca", ""),
-                'ssl_ca': ssl_ca_path,
+                'ssl_ca': st.secrets["database"].get("ssl_ca", ""),
                 'ssl_verify_identity': not st.secrets["database"].get("ssl_disabled", False),
             }
             connection = mysql.connector.connect(
@@ -277,8 +245,7 @@ def get_custom_mysql_connection_from_params(params: Dict) -> Optional[mysql.conn
         ssl_config = {
             'ssl_disabled': params.get("ssl_disabled", True),
             'ssl_verify_cert': not params.get("ssl_disabled", True),
-            # 'ssl_ca': params.get("ssl_ca", ""),
-            'ssl_ca': ssl_ca_path,
+            'ssl_ca': params.get("ssl_ca", ""),
             'ssl_verify_identity': not params.get("ssl_disabled", True),
         }
         connection = mysql.connector.connect(
@@ -1076,10 +1043,9 @@ def generate_db_response_with_presentation(
         if df is None or df.empty:
             return "No results found for your query.", None, None
        
-        # Dynamic sample data: Use fewer rows for large datasets
-        sample_rows = min(5, len(df))  # Show max 5 rows in summary
+        # Prepare data summary
         data_summary = f"Query returned {len(df)} rows with columns: {', '.join(df.columns.tolist())}\n\n"
-        data_summary += f"Sample data (first {sample_rows} rows):\n{df.head(sample_rows).to_string()}"
+        data_summary += f"Sample data:\n{df.head(10).to_string()}"
        
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -1107,94 +1073,45 @@ Provide a natural, conversational response summarizing these results. Be concise
         return f"Found {len(df)} results.", df, None
 
 def create_visualization_if_applicable(df: pd.DataFrame, question: str) -> Optional[go.Figure]:
-    """Create appropriate visualization based on data and question - Enhanced for robustness"""
-    if df.empty or len(df) > 50:  # Reduced threshold for performance
+    """Create appropriate visualization based on data and question"""
+    if df.empty or len(df) > 100:
         return None
    
     question_lower = question.lower()
    
-    # Detect column types more robustly
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    date_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+    # Detect numeric columns
+    numeric_cols = df.select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
    
     if not numeric_cols:
         return None
    
-    # Improved detection for top-N or ranking queries
-    if any(word in question_lower for word in ['top', 'best', 'most', 'highest', 'lowest', 'rank', 'order']):
-        # Find likely x (categorical) and y (numeric) columns
+    # Bar chart for counts/aggregations
+    if any(word in question_lower for word in ['top', 'best', 'most', 'count', 'total', 'revenue']):
         if categorical_cols and numeric_cols:
-            x_col = categorical_cols[0]  # Default to first categorical
-            y_col = numeric_cols[0]      # Default to first numeric
-            # Heuristic: Prefer 'name' or 'id' for x, 'score', 'marks', 'price' for y
-            if any('name' in col.lower() or 'id' in col.lower() for col in categorical_cols):
-                x_col = next((col for col in categorical_cols if 'name' in col.lower() or 'id' in col.lower()), x_col)
-            if any('marks' in col.lower() or 'score' in col.lower() or 'price' in col.lower() or 'salary' in col.lower() for col in numeric_cols):
-                y_col = next((col for col in numeric_cols if any(kw in col.lower() for kw in ['marks', 'score', 'price', 'salary'])), y_col)
-            
             fig = px.bar(
-                df.head(20),  # Limit for performance
-                x=x_col,
-                y=y_col,
-                title=f"Top Results: {x_col.title()} by {y_col.title()}",
-                color=y_col,
+                df.head(15),
+                x=categorical_cols[0],
+                y=numeric_cols[0],
+                title=f"{categorical_cols[0].replace('_', ' ').title()} vs {numeric_cols[0].replace('_', ' ').title()}",
+                color=numeric_cols[0],
                 color_continuous_scale='viridis'
             )
-            fig.update_layout(xaxis_tickangle=-45, showlegend=False)
+            fig.update_layout(xaxis_tickangle=-45)
             return fig
    
-    # Distribution or breakdown
-    if any(word in question_lower for word in ['distribution', 'breakdown', 'by', 'group']):
+    # Pie chart for distribution
+    if 'distribution' in question_lower or 'breakdown' in question_lower:
         if categorical_cols and numeric_cols:
             fig = px.pie(
                 df.head(10),
                 names=categorical_cols[0],
                 values=numeric_cols[0],
-                title=f"Distribution by {categorical_cols[0].title()}"
+                title=f"Distribution of {numeric_cols[0].replace('_', ' ').title()}"
             )
             return fig
    
-    # Basic line chart for time-series if dates present
-    if date_cols and numeric_cols:
-        fig = px.line(
-            df,
-            x=date_cols[0],
-            y=numeric_cols[0],
-            title=f"Trend: {numeric_cols[0].title()} over Time"
-        )
-        return fig
-   
     return None
-
-def is_product_data(df: pd.DataFrame) -> bool:
-    """Enhanced check for product-like data - Requires multiple specific columns"""
-    product_indicators = ['product_name', 'name', 'brand', 'price', 'selling_price', 'category', 'mrp', 'discount']
-    col_lowers = [col.lower() for col in df.columns]
-    # Require at least 3 product indicators, including price-like and category/brand
-    price_like = any(ind in col_lowers for ind in ['price', 'selling_price', 'mrp'])
-    cat_brand_like = any(ind in col_lowers for ind in ['category', 'brand'])
-    count = sum(1 for ind in product_indicators if ind in col_lowers)
-    return count >= 3 and price_like and cat_brand_like
-
-def display_generic_row(row: Dict, idx: int) -> None:
-    """Display a generic row as an expandable card with key-value pairs"""
-    # Use first non-numeric column as header (e.g., name or id)
-    header_key = next((k for k in row if isinstance(row[k], str) and len(str(row[k])) < 50), list(row.keys())[0])
-    header_value = row[header_key]
-    with st.expander(f"📄 Row {idx+1}: {header_value}", expanded=False):
-        st.markdown('<div class="data-row-card">', unsafe_allow_html=True)
-        cols = st.columns(2)
-        for i, (key, value) in enumerate(row.items()):
-            with cols[i % 2]:
-                # Format values: Currency for price-like, dates, etc.
-                if any(kw in key.lower() for kw in ['price', 'salary', 'cost']) and isinstance(value, (int, float)):
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** ₹{value:,.2f}")
-                elif isinstance(value, datetime):
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** {value.strftime('%Y-%m-%d')}")
-                else:
-                    st.markdown(f"**{key.replace('_', ' ').title()}:** {value}")
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # ================= FILE UPLOAD FUNCTIONS =================
 def create_persistent_sqlite_from_file(file_bytes: bytes, filename: str, user_id: int) -> Tuple[bool, Optional[str], str]:
@@ -1288,9 +1205,9 @@ def create_download_link(df: pd.DataFrame, filename: str) -> str:
     """
 
 def display_product_dropdown(product: Dict, idx: int, turn_idx: int = 0):
-    """Display product in expandable dropdown - Only for confirmed product data"""
+    """Display product in expandable dropdown"""
     name = product.get('product_name') or product.get('name', 'Unknown Product')
-    price = product.get('price') or product.get('selling_price', 0) or product.get('mrp', 0)
+    price = product.get('price') or product.get('selling_price', 0)
    
     # Get additional quick info for the header
     brand = product.get('brand', '')
@@ -1332,7 +1249,7 @@ def display_product_dropdown(product: Dict, idx: int, turn_idx: int = 0):
             st.markdown("### ℹ️ Additional Information")
             if 'material' in product and product['material']:
                 st.markdown(f"**Material:** {product['material']}")
-            if 'stock' in product and product['stock'] is not None:
+            if 'stock' in product and product['stock']:
                 stock_status = "✅ In Stock" if product['stock'] > 0 else "❌ Out of Stock"
                 st.markdown(f"**Stock:** {stock_status} ({product['stock']} units)")
             if 'rating' in product and product['rating']:
@@ -1913,19 +1830,21 @@ else:
                 df = turn["result_df"]
                
                 if not df.empty:
-                    row_count = len(df)
-                    if is_product_data(df) and row_count <= 20:  # Stricter condition and limit
+                    # Check if product data
+                    is_product_data = any(col.lower() in ['product_name', 'name', 'brand', 'price', 'category']
+                                         for col in df.columns)
+                   
+                    if is_product_data and len(df) <= 50:
                         # Show as product dropdowns
-                        st.markdown(f"### 🛍️ Products Found ({row_count} items)")
+                        st.markdown(f"### 🛍️ Products Found ({len(df)} items)")
                         st.caption("*Click on any product to expand and view details*")
                        
                         for idx, row in df.iterrows():
                             display_product_dropdown(row.to_dict(), idx, turn_idx)
                     else:
-                        # Generic table display
-                        st.markdown(f"### 📊 Results ({row_count} rows)")
-                        with st.expander(f"View Data", expanded=False):
-                            st.dataframe(df, use_container_width=True, height=min(400, row_count * 30 + 50))  # Dynamic height
+                        # Show as table with download option
+                        with st.expander(f"📊 View All Results ({len(df)} items)", expanded=False):
+                            st.dataframe(df, use_container_width=True, height=400)
                             st.markdown(
                                 create_download_link(
                                     df,
@@ -2072,10 +1991,13 @@ else:
                                
                                 # Display results
                                 if df is not None and not df.empty:
-                                    row_count = len(df)
-                                    if is_product_data(df) and row_count <= 20:
+                                    # Check if product data
+                                    is_product_data = any(col.lower() in ['product_name', 'name', 'brand', 'price', 'category']
+                                                         for col in df.columns)
+                                   
+                                    if is_product_data and len(df) <= 50:
                                         # Show as product dropdowns
-                                        st.markdown(f"### 🛍️ Products Found ({row_count} items)")
+                                        st.markdown(f"### 🛍️ Products Found ({len(df)} items)")
                                         st.caption("*Click on any product to expand and view details*")
                                        
                                         # Use current turn count as turn_idx
@@ -2083,24 +2005,16 @@ else:
                                         for idx, row in df.iterrows():
                                             display_product_dropdown(row.to_dict(), idx, current_turn_idx)
                                     else:
-                                        # Generic display: Table for larger sets, cards for small
-                                        st.markdown(f"### 📊 Results ({row_count} rows)")
-                                        if row_count <= 10:
-                                            # Show as expandable cards for small datasets
-                                            st.caption("Click rows to expand details")
-                                            for idx, row in df.iterrows():
-                                                display_generic_row(row.to_dict(), idx)
-                                        else:
-                                            # Table for larger sets
-                                            with st.expander(f"View Full Data", expanded=True):
-                                                st.dataframe(df, use_container_width=True, height=min(400, row_count * 30 + 50))
-                                                st.markdown(
-                                                    create_download_link(
-                                                        df,
-                                                        f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                                                    ),
-                                                    unsafe_allow_html=True
-                                                )
+                                        # Show as table with download option
+                                        with st.expander(f"📊 View All Results ({len(df)} items)", expanded=True):
+                                            st.dataframe(df, use_container_width=True, height=400)
+                                            st.markdown(
+                                                create_download_link(
+                                                    df,
+                                                    f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                                                ),
+                                                unsafe_allow_html=True
+                                            )
                                
                                 # Query details expander
                                 with st.expander("🔍 View Query & Optimization Details"):
@@ -2216,3 +2130,4 @@ with col2:
     st.caption(f"🗄️ {db_status}")
 with col3:
     st.caption("🧠 Context-Aware + ⚡ Smart Queries")
+    
