@@ -40,6 +40,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 import tempfile
 import shutil
 import glob
+import streamlit.components.v1 as components
+
 # ================= CONFIGURATION =================
 st.set_page_config(
     page_title="SQL Assistant Pro",
@@ -137,6 +139,19 @@ def load_embedding_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 embedding_model = load_embedding_model()
+
+@st.cache_resource
+def get_groq_client():
+    """Initialize Groq client with proper configuration for Streamlit Cloud"""
+    try:
+        # Initialize without proxies parameter - fixes cloud deployment
+        client = Groq(
+            api_key=st.secrets["groq"]["api_key"]
+        )
+        return client
+    except Exception as e:
+        st.error(f"Failed to initialize Groq client: {e}")
+        return None
 
 # ================= SESSION STATE INITIALIZATION =================
 if 'logged_in' not in st.session_state:
@@ -586,7 +601,8 @@ def summarize_old_messages(messages: List[Dict]) -> str:
         summary_text += f"Q: {msg['question']}\nA: {response_preview}...\n\n"
    
     try:
-        client = Groq(api_key=st.secrets["groq"]["api_key"])
+        # client = Groq(api_key=st.secrets["groq"]["api_key"])
+        client = get_groq_client()
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{
@@ -594,7 +610,7 @@ def summarize_old_messages(messages: List[Dict]) -> str:
                 "content": f"Summarize this conversation history concisely, focusing on key context and user preferences:\n\n{summary_text}"
             }],
             max_tokens=500,
-            temperature=0.5
+            temperature=0.3
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -675,7 +691,8 @@ def build_optimized_context(
 def analyze_query_intent_with_llm(question: str, schema: Dict) -> Dict:
     """Use LLM to analyze query intent and determine table requirements"""
     try:
-        client = Groq(api_key=st.secrets["groq"]["api_key"])
+        # client = Groq(api_key=st.secrets["groq"]["api_key"])
+        client = get_groq_client()
        
         # Prepare schema summary for LLM
         schema_summary = "Available Tables:\n"
@@ -741,7 +758,8 @@ Return ONLY the JSON, no additional text."""
 def generate_sql_query(question: str, schema_text: str, context: str, intent_analysis: Optional[Dict] = None, is_sqlite: bool = False) -> Dict:
     """Generate SQL query using Groq Llama with smart multi-table logic"""
     try:
-        client = Groq(api_key=st.secrets["groq"]["api_key"])
+        # client = Groq(api_key=st.secrets["groq"]["api_key"])
+        client = get_groq_client()
        
         # Determine SQL dialect
         sql_dialect = "SQLite" if is_sqlite else "MySQL"
@@ -1133,7 +1151,8 @@ def generate_db_response_with_presentation(
 ) -> Tuple[str, Optional[pd.DataFrame], Optional[go.Figure]]:
     """Generate natural language response with visualization using Groq Llama"""
     try:
-        client = Groq(api_key=st.secrets["groq"]["api_key"])
+        # client = Groq(api_key=st.secrets["groq"]["api_key"])
+        client = get_groq_client()
        
         df = result.get("data")
         if df is None or df.empty:
@@ -1318,21 +1337,50 @@ def create_temp_database_from_mysql_file(file_bytes: bytes, filename: str, mysql
         return False, None, f"File processing error: {str(e)}"
 
 # ================= UI HELPER FUNCTIONS =================
-def create_copy_button(text: str, label: str = "Copy") -> str:
-    """Create copy-to-clipboard button"""
-    escaped_text = text.replace('`', '\\`').replace('$', '\\$').replace('"', '\\"')
-    return f"""
-    <button onclick="navigator.clipboard.writeText(`{escaped_text}`)" style="
-        background: #667eea;
-        color: white;
-        border: none;
-        padding: 0.5rem 1rem;
-        border-radius: 5px;
-        cursor: pointer;
-        font-size: 0.9rem;
-        margin: 0.5rem 0;
-    ">{label}</button>
+# =========================================================================
+# New helper function - no HTML/JS needed
+# =========================================================================
+def copy_button(text: str, button_text: str = "📋 Copy", key: str = None):
     """
+    Creates a small copy button using isolated HTML component.
+    Works better than raw st.markdown for clipboard in many cases.
+    """
+    if key is None:
+        key = f"copy_{id(text)}_{len(text)}"  # crude unique key
+
+    escaped_text = text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$').replace('"', '\\"')
+
+    html_content = f"""
+    <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="copyBtn_{key}"
+                style="background:#4f46e5; color:white; border:none; padding:6px 10px; border-radius:5px; cursor:pointer; font-size:13px;">
+            {button_text}
+        </button>
+        <span id="feedback_{key}" style="font-size:12px; color:#666; min-width:60px;"></span>
+    </div>
+
+    <script>
+    const btn = document.getElementById('copyBtn_{key}');
+    const feedback = document.getElementById('feedback_{key}');
+
+    btn.onclick = function() {{
+        navigator.clipboard.writeText(`{escaped_text}`)
+            .then(() => {{
+                feedback.textContent = 'Copied!';
+                feedback.style.color = '#16a34a';
+                setTimeout(() => {{ feedback.textContent = ''; }}, 1800);
+            }})
+            .catch(err => {{
+                console.error('Clipboard error:', err);
+                feedback.textContent = 'Failed';
+                feedback.style.color = '#dc2626';
+            }});
+    }};
+    </script>
+    """
+
+    # Important: height must be enough for the button + feedback
+    components.html(html_content, height=50, scrolling=False)
 
 def create_download_link(df: pd.DataFrame, filename: str) -> str:
     """Create download link for DataFrame"""
@@ -1444,7 +1492,7 @@ if not st.session_state.logged_in:
     col1, col2, col3 = st.columns([1, 2, 1])
    
     with col2:
-        st.markdown('<div class="auth-container">', unsafe_allow_html=True)
+        # st.markdown('<div class="auth-container">', unsafe_allow_html=True)
         st.markdown('<div class="auth-header">', unsafe_allow_html=True)
         st.markdown("# 🗄️ SQL Assistant Pro")
         st.markdown("### Powered by Meta Llama 3.3 via Groq")
@@ -1453,7 +1501,7 @@ if not st.session_state.logged_in:
         tab1, tab2 = st.tabs(["🔑 Login", "✨ Sign Up"])
        
         with tab1:
-            st.markdown('<div class="auth-form">', unsafe_allow_html=True)
+            # st.markdown('<div class="auth-form">', unsafe_allow_html=True)
             with st.form("login_form"):
                 st.markdown("### Welcome Back!")
                 username = st.text_input("Username", placeholder="Enter your username")
@@ -1529,7 +1577,7 @@ if not st.session_state.logged_in:
 
 # ================= MAIN APP =================
 # Header
-col1, col2, col3 = st.columns([2, 3, 1])
+col1, col2, col3 = st.columns([3, 3, 1])
 with col1:
     st.title("🗄️ SQL Assistant Pro")
 with col2:
@@ -1964,8 +2012,8 @@ else:
         # User message
         with st.chat_message("user"):
             st.write(turn["question"])
-            st.markdown(create_copy_button(turn["question"], "📋 Copy Question"), unsafe_allow_html=True)
-       
+            copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
+
         # Assistant message
         with st.chat_message("assistant"):
             if turn.get("response"):
@@ -2000,8 +2048,9 @@ else:
             if turn.get("query_generated"):
                 with st.expander("🔍 View SQL Query & Details"):
                     st.code(turn["query_generated"], language="sql")
-                    st.markdown(create_copy_button(turn["query_generated"], "📋 Copy Query"), unsafe_allow_html=True)
-                   
+                    # st.markdown(create_copy_button(turn["query_generated"], "📋 Copy Query"), unsafe_allow_html=True)
+                    copy_button(turn["query_generated"], "Copy SQL Query", key=f"sql_{turn_idx}")
+
                     # Show query type
                     query_lower = turn["query_generated"].lower()
                     if "join" in query_lower:
