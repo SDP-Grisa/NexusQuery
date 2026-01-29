@@ -2070,7 +2070,7 @@ else:
         # Display user message
         with st.chat_message("user"):
             st.write(user_question)
-            st.markdown(create_copy_button(user_question, "📋 Copy Question"), unsafe_allow_html=True)
+            copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
        
         # Generate response
         with st.chat_message("assistant"):
@@ -2165,7 +2165,7 @@ else:
                                
                                 with st.expander("🔍 View Failed Query"):
                                     st.code(query, language="sql")
-                                    st.markdown(create_copy_button(query, "📋 Copy Query"), unsafe_allow_html=True)
+                                    copy_button(turn["query_generated"], "Copy SQL Query", key=f"sql_{turn_idx}")
                             else:
                                 # Generate response with visualization
                                 summary, df, visualization = generate_db_response_with_presentation(
@@ -2227,7 +2227,7 @@ else:
                                     db_type = "SQLite" if is_sqlite else "MySQL"
                                     st.caption(f"Database Type: {db_type}")
                                     st.code(query, language="sql")
-                                    st.markdown(create_copy_button(query, "📋 Copy Query"), unsafe_allow_html=True)
+                                    copy_button(turn["query_generated"], "Copy SQL Query", key=f"sql_{turn_idx}")
                                    
                                     st.subheader("🎯 Query Intent Analysis (LLM-Based)")
                                     col1, col2 = st.columns(2)
