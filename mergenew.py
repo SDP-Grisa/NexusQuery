@@ -122,6 +122,49 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def copy_button(text: str, button_text: str = "📋 Copy", key: str = None):
+    """
+    Creates a small copy button using isolated HTML component.
+    Works better than raw st.markdown for clipboard in many cases.
+    """
+    if key is None:
+        key = f"copy_{id(text)}_{len(text)}"  # crude unique key
+
+    escaped_text = text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$').replace('"', '\\"')
+
+    html_content = f"""
+    <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="copyBtn_{key}"
+                style="background:#4f46e5; color:white; border:none; padding:6px 10px; border-radius:5px; cursor:pointer; font-size:13px;">
+            {button_text}
+        </button>
+        <span id="feedback_{key}" style="font-size:12px; color:#666; min-width:60px;"></span>
+    </div>
+
+    <script>
+    const btn = document.getElementById('copyBtn_{key}');
+    const feedback = document.getElementById('feedback_{key}');
+
+    btn.onclick = function() {{
+        navigator.clipboard.writeText(`{escaped_text}`)
+            .then(() => {{
+                feedback.textContent = 'Copied!';
+                feedback.style.color = '#16a34a';
+                setTimeout(() => {{ feedback.textContent = ''; }}, 1800);
+            }})
+            .catch(err => {{
+                console.error('Clipboard error:', err);
+                feedback.textContent = 'Failed';
+                feedback.style.color = '#dc2626';
+            }});
+    }};
+    </script>
+    """
+
+    # Important: height must be enough for the button + feedback
+    components.html(html_content, height=50, scrolling=False)
+
+
 # Create persistent DB directory if it doesn't exist
 PERSISTENT_DB_DIR = "custom_dbs"
 os.makedirs(PERSISTENT_DB_DIR, exist_ok=True)
@@ -1340,47 +1383,6 @@ def create_temp_database_from_mysql_file(file_bytes: bytes, filename: str, mysql
 # =========================================================================
 # New helper function - no HTML/JS needed
 # =========================================================================
-def copy_button(text: str, button_text: str = "📋 Copy", key: str = None):
-    """
-    Creates a small copy button using isolated HTML component.
-    Works better than raw st.markdown for clipboard in many cases.
-    """
-    if key is None:
-        key = f"copy_{id(text)}_{len(text)}"  # crude unique key
-
-    escaped_text = text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$').replace('"', '\\"')
-
-    html_content = f"""
-    <div style="display: flex; align-items: center; gap: 8px;">
-        <button id="copyBtn_{key}"
-                style="background:#4f46e5; color:white; border:none; padding:6px 10px; border-radius:5px; cursor:pointer; font-size:13px;">
-            {button_text}
-        </button>
-        <span id="feedback_{key}" style="font-size:12px; color:#666; min-width:60px;"></span>
-    </div>
-
-    <script>
-    const btn = document.getElementById('copyBtn_{key}');
-    const feedback = document.getElementById('feedback_{key}');
-
-    btn.onclick = function() {{
-        navigator.clipboard.writeText(`{escaped_text}`)
-            .then(() => {{
-                feedback.textContent = 'Copied!';
-                feedback.style.color = '#16a34a';
-                setTimeout(() => {{ feedback.textContent = ''; }}, 1800);
-            }})
-            .catch(err => {{
-                console.error('Clipboard error:', err);
-                feedback.textContent = 'Failed';
-                feedback.style.color = '#dc2626';
-            }});
-    }};
-    </script>
-    """
-
-    # Important: height must be enough for the button + feedback
-    components.html(html_content, height=50, scrolling=False)
 
 def create_download_link(df: pd.DataFrame, filename: str) -> str:
     """Create download link for DataFrame"""
@@ -2012,7 +2014,7 @@ else:
         # User message
         with st.chat_message("user"):
             st.write(turn["question"])
-            copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
+            # copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
 
         # Assistant message
         with st.chat_message("assistant"):
@@ -2070,7 +2072,7 @@ else:
         # Display user message
         with st.chat_message("user"):
             st.write(user_question)
-            copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
+            # copy_button(turn["question"], "Copy question", key=f"q_{turn_idx}")
        
         # Generate response
         with st.chat_message("assistant"):
@@ -2227,7 +2229,7 @@ else:
                                     db_type = "SQLite" if is_sqlite else "MySQL"
                                     st.caption(f"Database Type: {db_type}")
                                     st.code(query, language="sql")
-                                    copy_button(turn["query_generated"], "Copy SQL Query", key=f"sql_{turn_idx}")
+                                    # copy_button(turn["query_generated"], "Copy SQL Query", key=f"sql_{turn_idx}")
                                    
                                     st.subheader("🎯 Query Intent Analysis (LLM-Based)")
                                     col1, col2 = st.columns(2)
